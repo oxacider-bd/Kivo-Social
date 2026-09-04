@@ -75,11 +75,12 @@ async function fanOutToSupabaseRealtime(
       warnFanOutOnce("actor token could not be verified");
       return;
     }
-    const { url, publishableKey } = getSupabaseEnv();
-    const res = await fetch(`${url}/rest/v1/notifications`, {
+    const env = getSupabaseEnv();
+    if (!env) return;
+    const res = await fetch(`${env.url}/rest/v1/notifications`, {
       method: "POST",
       headers: {
-        apikey: publishableKey,
+        apikey: env.publishableKey,
         authorization,
         "content-type": "application/json",
         Prefer: "return=minimal",

@@ -29,8 +29,8 @@ export interface SupabasePing {
 
 let cachedEnv: SupabaseEnv | null = null;
 
-/** Reads + validates the Supabase env vars. Throws a helpful error when unset. */
-export function getSupabaseEnv(): SupabaseEnv {
+/** Reads + validates the Supabase env vars. Returns null during build if unset. */
+export function getSupabaseEnv(): SupabaseEnv | null {
   if (cachedEnv) return cachedEnv;
 
   const rawUrl = (
@@ -42,6 +42,9 @@ export function getSupabaseEnv(): SupabaseEnv {
   )?.trim();
 
   if (!rawUrl || !publishableKey) {
+    if (process.env.NEXT_RUNTIME === 'nodejs' || !process.env.NEXT_RUNTIME) {
+      return null;
+    }
     throw new Error(
       "Supabase is not configured. Set VITE_SUPABASE_URL and " +
         "VITE_SUPABASE_PUBLISHABLE_KEY (or NEXT_PUBLIC_ equivalents) in the project environment (.env)."
@@ -52,10 +55,10 @@ export function getSupabaseEnv(): SupabaseEnv {
   try {
     parsed = new URL(rawUrl);
   } catch {
-    throw new Error("VITE_SUPABASE_URL must be a valid URL.");
+    return null;
   }
   if (parsed.protocol !== "https:") {
-    throw new Error("VITE_SUPABASE_URL must use https.");
+    return null;
   }
 
   cachedEnv = {
@@ -68,12 +71,7 @@ export function getSupabaseEnv(): SupabaseEnv {
 
 /** Non-throwing config check — safe to call in UI code paths. */
 export function isSupabaseConfigured(): boolean {
-  try {
-    getSupabaseEnv();
-    return true;
-  } catch {
-    return false;
-  }
+  return getSupabaseEnv() !== null;
 }
 
 let browserClient: SupabaseClient | null = null;
@@ -102,9 +100,12 @@ export function getCurrentSupabaseAccessToken(): string | null {
  *   email-confirmation links (PKCE flow) into a real session on load.
  */
 export function getSupabaseBrowserClient(): SupabaseClient {
+  const env = getSupabaseEnv();
+  if (!env) {
+    throw new Error("Supabase is not configured. Set environment variables first.");
+  }
   if (!browserClient) {
-    const { url, publishableKey } = getSupabaseEnv();
-    browserClient = createClient(url, publishableKey, {
+    browserClient = createClient(env.url, env.publishableKey, {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
@@ -118,8 +119,11 @@ export function getSupabaseBrowserClient(): SupabaseClient {
 
 /** Fresh per-request Supabase client for API routes / server code (publishable key only). */
 export function createSupabaseServerClient(): SupabaseClient {
-  const { url, publishableKey } = getSupabaseEnv();
-  return createClient(url, publishableKey, {
+  const env = getSupabaseEnv();
+  if (!env) {
+    throw new Error("Supabase is not configured. Set environment variables first.");
+  }
+  return createClient(env.url, env.publishableKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 }
@@ -139,8 +143,9 @@ export const SUPABASE_BUCKET_BY_KIND: Record<
 
 /** Public CDN URL for an object in a public bucket. */
 export function supabaseStoragePublicUrl(bucket: string, objectPath: string): string {
-  const { url } = getSupabaseEnv();
-  return `${url}/storage/v1/object/public/${bucket}/${objectPath.replace(/^\/+/, "")}`;
+  const env = getSupabaseEnv();
+  if (!env) return "";
+  return `${env.url}/storage/v1/object/public/${bucket}/${objectPath.replace(/^\/+/, "")}`;
 }
 
 /**
@@ -149,11 +154,14 @@ export function supabaseStoragePublicUrl(bucket: string, objectPath: string): st
  * Throws only when the env vars are missing; otherwise reports the result.
  */
 export async function pingSupabase(timeoutMs = 8_000): Promise<SupabasePing> {
+  const env = getSupabaseEnv();
+  if (!env) {
+    return { ok: false, latencyMs: 0, detail: "Supabase not configured" };
+  }
   const started = Date.now();
   try {
-    const { url, publishableKey } = getSupabaseEnv();
-    const res = await fetch(`${url}/auth/v1/health`, {
-      headers: { apikey: publishableKey },
+    const res = await fetch(`${env.url}/auth/v1/health`, {
+      headers: { apikey: env.publishableKey },
       cache: "no-store",
       signal: AbortSignal.timeout(timeoutMs),
     });

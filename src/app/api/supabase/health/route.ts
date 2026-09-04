@@ -13,8 +13,8 @@ export const dynamic = "force-dynamic";
  * configuration fails the request.
  */
 export async function GET() {
-  const configured = isConfiguredSafe();
-  if (!configured) {
+  const env = getSupabaseEnv();
+  if (!env) {
     return fail(
       "SUPABASE_NOT_CONFIGURED",
       "Supabase environment variables are missing on the server.",
@@ -22,7 +22,6 @@ export async function GET() {
     );
   }
 
-  const env = getSupabaseEnv();
   const ping = await pingSupabase();
 
   return ok({
@@ -32,14 +31,4 @@ export async function GET() {
     keyScope: "publishable" as const,
     ping,
   });
-}
-
-/** getSupabaseEnv throws when unset — wrap so we can return a 503 envelope instead. */
-function isConfiguredSafe(): boolean {
-  try {
-    getSupabaseEnv();
-    return true;
-  } catch {
-    return false;
-  }
 }
