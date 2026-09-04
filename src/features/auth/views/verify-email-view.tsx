@@ -76,16 +76,44 @@ export default function VerifyEmailView() {
     setStatus(null);
     setVerifying(true);
     try {
-      await verifyEmailOtp(email, code);
+      const { session } = await verifyEmailOtp(email, code);
       setVerified(true);
       clearPendingVerification();
-      setStatus("Email verified. Taking you into KIVO…");
 
-      // Resolve the centralized auth state (bridge + profile) — no second login.
-      const user = await useSession.getState().refresh();
-      if (!user) throw new Error("Email verified — but signing you in failed. Try again.");
-      toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
-      setTimeout(() => navigateTo("/", { replace: true }), 800);
+      if (session?.user) {
+        // Auto-login succeeded — session is already persisted by Supabase client
+        setStatus("Email verified. Taking you into KIVO…");
+        const user = await useSession.getState().refresh();
+        if (user) {
+          toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
+          setTimeout(() => navigateTo("/", { replace: true }), 800);
+          return;
+        }
+      }
+
+      // Session not returned — try to sign in with stored password or redirect
+      setStatus("Email verified! Signing you in…");
+      const storedPassword = window.sessionStorage.getItem("signup_password");
+      
+      if (storedPassword) {
+        try {
+          const { signIn } = await import("@/services/auth");
+          await signIn(email, storedPassword);
+          window.sessionStorage.removeItem("signup_password");
+          const user = await useSession.getState().refresh();
+          if (user) {
+            toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
+            setTimeout(() => navigateTo("/", { replace: true }), 800);
+            return;
+          }
+        } catch {
+          // signIn failed, fall through to redirect
+        }
+      }
+
+      // Fallback: redirect to login with success message
+      toast.success("Email verified! Please sign in.", { duration: 5000 });
+      setTimeout(() => navigateTo("/login", { replace: true }), 1500);
     } catch (err) {
       setVerified(false);
       setError(err instanceof Error ? err.message : "Couldn't verify your email right now. Please try again.");

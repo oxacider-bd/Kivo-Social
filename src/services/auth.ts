@@ -97,14 +97,20 @@ export async function requestPasswordReset(email: string): Promise<void> {
  * Verify the signup email with the REAL 6-digit OTP from the Supabase email
  * (the project's template uses {{ .Token }}). On success Supabase
  * establishes the session in the browser client — no second login needed.
+ * Returns the session if auto-login succeeded, null otherwise.
  */
-export async function verifyEmailOtp(email: string, token: string): Promise<void> {
-  const { error } = await getSupabaseBrowserClient().auth.verifyOtp({
+export async function verifyEmailOtp(
+  email: string,
+  token: string
+): Promise<{ session: any | null }> {
+  const supabase = getSupabaseBrowserClient();
+  const { data, error } = await supabase.auth.verifyOtp({
     email,
     token,
     type: "email",
   });
   if (error) throw mapSupabaseError(error);
+  return { session: data?.session ?? null };
 }
 
 /** Send a fresh confirmation OTP for a pending signup. */

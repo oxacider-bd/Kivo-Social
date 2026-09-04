@@ -65,6 +65,12 @@ export default function SignupView() {
       if (result.status === "confirmation-required") {
         // Hand off to the dedicated OTP verification screen. Only the email
         // (never the password or code) is stored, so a refresh stays recoverable.
+        // Store password temporarily for auto-login after OTP verification
+        try {
+          window.sessionStorage.setItem("signup_password", password);
+        } catch {
+          /* ignore */
+        }
         setPendingVerification(email.trim());
         navigateTo("/verify-email", { replace: true });
         return;
