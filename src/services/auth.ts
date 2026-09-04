@@ -108,7 +108,7 @@ export async function requestPasswordReset(email: string): Promise<void> {
 export async function verifyEmailOtp(
   email: string,
   token: string
-): Promise<{ session: any | null }> {
+): Promise<{ session: any | null; user: any | null }> {
   const supabase = getSupabaseBrowserClient();
   const { data, error } = await supabase.auth.verifyOtp({
     email,
@@ -116,7 +116,7 @@ export async function verifyEmailOtp(
     type: "email",
   });
   if (error) throw mapSupabaseError(error);
-  return { session: data?.session ?? null };
+  return { session: data?.session ?? null, user: data?.user ?? null };
 }
 
 /** Send a fresh confirmation OTP for a pending signup. */

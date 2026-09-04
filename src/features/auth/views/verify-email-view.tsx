@@ -16,16 +16,16 @@ import { Button } from "@/components/ui/button";
 import { Check, Loader2, MailCheck } from "lucide-react";
 import { toast } from "sonner";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
+import { api } from "@/lib/api";
+import type { SessionUser } from "@/types";
 
 /**
  * "Verify your email" — the dedicated screen for signup email confirmation.
  *
- * After OTP verification, we auto-login by:
- * 1. Using the session returned directly from verifyOtp (if available)
- * 2. Polling getSession() until Supabase establishes the session
- * 3. Signing in with the stored password as fallback
- *
- * We NEVER redirect to /login after successful OTP verification.
+ * After OTP verification succeeds and returns a session:
+ * 1. Explicitly set the session in Supabase client storage
+ * 2. Call the bridge API directly to create the app user + cookie
+ * 3. Force a full page reload to / for fresh state
  */
 
 const OTP_LENGTH = 6;
@@ -60,29 +60,86 @@ export default function VerifyEmailView() {
     return () => clearTimeout(t);
   }, [resendIn]);
 
-  /** Poll for session after verifyOtp — Supabase may need a moment. */
+  /**
+   * After verifyOtp returns a session, we must:
+   * 1. Call setSession() to persist it in the SDK's storage
+   * 2. Call the bridge to create the app user + cookie
+   * 3. Force navigate to / for a clean state
+   */
+  async function handleSessionFromVerifyOtp(session: any): Promise<boolean> {
+    const supabase = getSupabaseBrowserClient();
+
+    // Step 1: Explicitly set the session in the SDK storage
+    try {
+      await supabase.auth.setSession({
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+      });
+      console.log("[verify-email] setSession succeeded");
+    } catch (err) {
+      console.warn("[verify-email] setSession failed, continuing anyway:", err);
+    }
+
+    // Step 2: Call bridge API to create app user + cookie
+    try {
+      const user = await api<SessionUser>("/api/auth/bridge", {
+        body: { accessToken: session.access_token },
+      });
+      useSession.getState().setUser(user);
+      toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
+      window.location.href = "/";
+      return true;
+    } catch (err) {
+      console.warn("[verify-email] bridge call failed, trying direct approach:", err);
+    }
+
+    // Step 3: Bridge failed — try refresh() which has its own bridge logic
+    try {
+      const user = await useSession.getState().refresh();
+      if (user) {
+        toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
+        window.location.href = "/";
+        return true;
+      }
+    } catch (err) {
+      console.warn("[verify-email] refresh failed:", err);
+    }
+
+    return false;
+  }
+
+  /** Poll for session after verifyOtp — fallback if session wasn't in response. */
   async function waitForSession(maxMs = 8000): Promise<boolean> {
     const supabase = getSupabaseBrowserClient();
     const start = Date.now();
     while (Date.now() - start < maxMs) {
       try {
         const { data } = await supabase.auth.getSession();
-        if (data.session?.user) return true;
+        if (data.session?.user) {
+          console.log("[verify-email] Found session in storage, bridging...");
+          // Found a session — bridge it
+          try {
+            const user = await api<SessionUser>("/api/auth/bridge", {
+              body: { accessToken: data.session.access_token },
+            });
+            useSession.getState().setUser(user);
+            toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
+            window.location.href = "/";
+            return true;
+          } catch {
+            // Bridge failed — try refresh()
+            const user = await useSession.getState().refresh();
+            if (user) {
+              toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
+              window.location.href = "/";
+              return true;
+            }
+          }
+        }
       } catch {
         // transient — keep polling
       }
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    return false;
-  }
-
-  /** Try to establish the app session and navigate to home. */
-  async function enterApp(): Promise<boolean> {
-    const user = await useSession.getState().refresh();
-    if (user) {
-      toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
-      navigateTo("/", { replace: true });
-      return true;
+      await new Promise((r) => setTimeout(r, 300));
     }
     return false;
   }
@@ -100,58 +157,76 @@ export default function VerifyEmailView() {
     setStatus(null);
     setVerifying(true);
     try {
-      const { session } = await verifyEmailOtp(email, code);
+      const { session, user: supabaseUser } = await verifyEmailOtp(email, code);
       setVerified(true);
       clearPendingVerification();
       setStatus("Email verified. Signing you in…");
 
-      // Method 1: verifyOtp returned a session — use it directly
-      if (session?.user) {
-        if (await enterApp()) return;
+      console.log("[verify-email] verifyOtp result:", {
+        hasSession: !!session,
+        hasUser: !!supabaseUser,
+        sessionKeys: session ? Object.keys(session) : [],
+      });
+
+      // Method 1: verifyOtp returned a session — use it IMMEDIATELY
+      if (session?.user && session.access_token) {
+        setStatus("Setting up your account…");
+        if (await handleSessionFromVerifyOtp(session)) return;
       }
 
-      // Method 2: Poll for Supabase session (may take a moment to settle)
+      // Method 1b: Session exists but maybe setSession is needed
+      if (session?.access_token) {
+        const supabase = getSupabaseBrowserClient();
+        try {
+          await supabase.auth.setSession({
+            access_token: session.access_token,
+            refresh_token: session.refresh_token,
+          });
+          // Now try to get it back
+          const { data: { session: freshSession } } = await supabase.auth.getSession();
+          if (freshSession?.user) {
+            setStatus("Setting up your account…");
+            const user = await api<SessionUser>("/api/auth/bridge", {
+              body: { accessToken: freshSession.access_token },
+            });
+            useSession.getState().setUser(user);
+            toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
+            window.location.href = "/";
+            return;
+          }
+        } catch (err) {
+          console.warn("[verify-email] setSession + getSession failed:", err);
+        }
+      }
+
+      // Method 2: Poll for Supabase session (SDK may need a moment to persist it)
       setStatus("Waiting for session to establish…");
-      if (await waitForSession(8000)) {
-        if (await enterApp()) return;
-      }
+      if (await waitForSession(6000)) return;
 
-      // Method 3: Try signing in with stored password (signup stores it)
+      // Method 3: Try signing in with stored password
       const storedPassword = window.sessionStorage.getItem("signup_password");
       if (storedPassword) {
         setStatus("Signing in with your credentials…");
         try {
           await signIn(email, storedPassword);
           window.sessionStorage.removeItem("signup_password");
-          if (await enterApp()) return;
-        } catch {
-          // signIn failed — fall through to final attempt
-        }
-      }
-
-      // Method 4: Last resort — try signInWithPassword directly with stored password
-      if (storedPassword) {
-        try {
-          const supabase = getSupabaseBrowserClient();
-          const { error: signInErr } = await supabase.auth.signInWithPassword({
-            email,
-            password: storedPassword,
-          });
-          if (!signInErr) {
-            window.sessionStorage.removeItem("signup_password");
-            if (await enterApp()) return;
+          const user = await useSession.getState().refresh();
+          if (user) {
+            toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
+            window.location.href = "/";
+            return;
           }
         } catch {
-          // fall through
+          // signIn failed
         }
       }
 
-      // If everything failed, show the user a helpful message — do NOT redirect to /login
+      // If everything failed — show helpful message, do NOT redirect to /login
       setStatus(null);
       setVerified(false);
       setError(
         "Verification succeeded but we couldn't sign you in automatically. " +
-        "Please try signing in with your email and password."
+        "Go to the sign-in page and enter your email and password."
       );
       setErrorNonce((n) => n + 1);
     } catch (err) {
