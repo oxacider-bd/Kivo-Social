@@ -43,27 +43,27 @@ export function getSupabaseEnv(): SupabaseEnv | null {
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
   )?.trim();
 
-  // If missing, return null
-  if (!rawUrl || !publishableKey) {
-    return null;
-  }
+  // Hardcoded fallback — guarantees the client ALWAYS works in the browser
+  // even if env vars are not embedded at build time.
+  const url = rawUrl || "https://ulhubxawckcrfsyrrqqp.supabase.co";
+  const key = publishableKey || "sb_publishable_yhOKegAXOI4JR_vW87OpFg_St86-zlo";
 
   // Validate URL format
   let parsed: URL;
   try {
-    parsed = new URL(rawUrl);
+    parsed = new URL(url);
   } catch {
-    console.warn("[supabase] Invalid Supabase URL, returning null:", rawUrl);
+    console.warn("[supabase] Invalid Supabase URL, returning null:", url);
     return null;
   }
   if (parsed.protocol !== "https:") {
-    console.warn("[supabase] Supabase URL must use https:", rawUrl);
+    console.warn("[supabase] Supabase URL must use https:", url);
     return null;
   }
 
   cachedEnv = {
-    url: rawUrl.replace(/\/+$/, ""),
-    publishableKey,
+    url: url.replace(/\/+$/, ""),
+    publishableKey: key,
     projectRef: parsed.hostname.split(".")[0] ?? "",
   };
   return cachedEnv;
@@ -103,15 +103,10 @@ export function getCurrentSupabaseAccessToken(): string | null {
  */
 export function getSupabaseBrowserClient(): SupabaseClient {
   const env = getSupabaseEnv();
-  if (!env) {
-    // Throw a clear error instead of using placeholder (causes "offline" error)
-    throw new Error(
-      "Supabase is not configured. Please set NEXT_PUBLIC_SUPABASE_URL and " +
-      "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY in your environment variables."
-    );
-  }
+  const url = env?.url ?? "https://ulhubxawckcrfsyrrqqp.supabase.co";
+  const publishableKey = env?.publishableKey ?? "sb_publishable_yhOKegAXOI4JR_vW87OpFg_St86-zlo";
   if (!browserClient) {
-    browserClient = createClient(env.url, env.publishableKey, {
+    browserClient = createClient(url, publishableKey, {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
@@ -151,8 +146,8 @@ export const SUPABASE_BUCKET_BY_KIND: Record<
 /** Public CDN URL for an object in a public bucket. */
 export function supabaseStoragePublicUrl(bucket: string, objectPath: string): string {
   const env = getSupabaseEnv();
-  if (!env) return "";
-  return `${env.url}/storage/v1/object/public/${bucket}/${objectPath.replace(/^\/+/, "")}`;
+  const url = env?.url ?? "https://ulhubxawckcrfsyrrqqp.supabase.co";
+  return `${url}/storage/v1/object/public/${bucket}/${objectPath.replace(/^\/+/, "")}`;
 }
 
 /**
