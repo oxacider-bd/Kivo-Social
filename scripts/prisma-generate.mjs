@@ -24,7 +24,7 @@ if (!existsSync(schema)) {
 
 console.log(`[prisma-generate] using ${schema}`);
 
-const result = spawnSync("bunx", ["prisma", "generate", "--schema", schema], {
+const result = spawnSync("npx", ["--yes", "prisma", "generate", "--schema", schema], {
   stdio: "inherit",
 });
 

@@ -10,6 +10,7 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  schemas  = ["kivo"]
 }
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
@@ -18,8 +19,6 @@ model User {
   id           String          @id @default(cuid())
   email        String          @unique
   passwordHash String
-  // Supabase Auth identity for this account (set by the auth bridge).
-  // Null for legacy local-only accounts (e.g. the seeded demo users).
   supabaseId   String?         @unique
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
@@ -45,6 +44,8 @@ model User {
   actorNotifications Notification[] @relation("actor")
   spaceMemberships SpaceMember[]
   ownedSpaces  Space[]
+
+  @@schema("kivo")
 }
 
 model Session {
@@ -56,6 +57,7 @@ model Session {
   createdAt DateTime @default(now())
 
   @@index([userId])
+  @@schema("kivo")
 }
 
 model PasswordReset {
@@ -66,6 +68,8 @@ model PasswordReset {
   expiresAt DateTime
   usedAt    DateTime?
   createdAt DateTime  @default(now())
+
+  @@schema("kivo")
 }
 
 // ─── Profiles ────────────────────────────────────────────────────────────────
@@ -81,12 +85,12 @@ model Profile {
   coverUrl          String?
   mood              String   @default("")
   isPrivate         Boolean  @default(false)
-  // PUBLIC | FOLLOWERS | ONLY_ME — default privacy for new posts
   defaultPrivacy    String   @default("PUBLIC")
-  // JSON string: {reactions,comments,replies,follows,mentions,spaceActivity}
   notificationPrefs String   @default("{}")
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+
+  @@schema("kivo")
 }
 
 // ─── Follows ─────────────────────────────────────────────────────────────────
@@ -101,6 +105,7 @@ model Follow {
 
   @@unique([followerId, followingId])
   @@index([followingId])
+  @@schema("kivo")
 }
 
 model FollowRequest {
@@ -109,11 +114,12 @@ model FollowRequest {
   requester   User     @relation("requester", fields: [requesterId], references: [id], onDelete: Cascade)
   targetId    String
   target      User     @relation("target", fields: [targetId], references: [id], onDelete: Cascade)
-  status      String   @default("PENDING") // PENDING | ACCEPTED
+  status      String   @default("PENDING")
   createdAt   DateTime @default(now())
 
   @@unique([requesterId, targetId])
   @@index([targetId, status])
+  @@schema("kivo")
 }
 
 // ─── Posts ───────────────────────────────────────────────────────────────────
@@ -123,7 +129,6 @@ model Post {
   authorId        String
   author          User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
   content         String   @default("")
-  // PUBLIC | FOLLOWERS | ONLY_ME
   privacy         String   @default("PUBLIC")
   feeling         String?
   linkUrl         String?
@@ -144,6 +149,7 @@ model Post {
 
   @@index([authorId, createdAt])
   @@index([spaceId, createdAt])
+  @@schema("kivo")
 }
 
 model PostMedia {
@@ -151,12 +157,13 @@ model PostMedia {
   postId   String
   post     Post    @relation(fields: [postId], references: [id], onDelete: Cascade)
   url      String
-  type     String  @default("image") // image | video
+  type     String  @default("image")
   width    Int?
   height   Int?
   position Int     @default(0)
 
   @@index([postId])
+  @@schema("kivo")
 }
 
 model Reaction {
@@ -165,12 +172,12 @@ model Reaction {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   postId    String
   post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
-  // LOVE | FUNNY | WOW | SAD | FIRE | SUPPORT
   type      String
   createdAt DateTime @default(now())
 
   @@unique([userId, postId])
   @@index([postId])
+  @@schema("kivo")
 }
 
 model Comment {
@@ -191,6 +198,7 @@ model Comment {
 
   @@index([postId, createdAt])
   @@index([parentId])
+  @@schema("kivo")
 }
 
 model CommentReaction {
@@ -204,6 +212,7 @@ model CommentReaction {
 
   @@unique([userId, commentId])
   @@index([commentId])
+  @@schema("kivo")
 }
 
 // ─── Polls (posts + moments) ─────────────────────────────────────────────────
@@ -216,6 +225,8 @@ model Poll {
   moment   Moment?      @relation(fields: [momentId], references: [id], onDelete: Cascade)
   options  PollOption[]
   endsAt   DateTime?
+
+  @@schema("kivo")
 }
 
 model PollOption {
@@ -227,6 +238,7 @@ model PollOption {
   votes   PollVote[]
 
   @@index([pollId])
+  @@schema("kivo")
 }
 
 model PollVote {
@@ -239,6 +251,7 @@ model PollVote {
 
   @@unique([pollId, userId])
   @@index([optionId])
+  @@schema("kivo")
 }
 
 // ─── Hashtags ────────────────────────────────────────────────────────────────
@@ -248,6 +261,8 @@ model Hashtag {
   tag       String        @unique
   createdAt DateTime      @default(now())
   posts     PostHashtag[]
+
+  @@schema("kivo")
 }
 
 model PostHashtag {
@@ -258,6 +273,7 @@ model PostHashtag {
 
   @@id([postId, hashtagId])
   @@index([hashtagId])
+  @@schema("kivo")
 }
 
 // ─── Saved posts + Collections ───────────────────────────────────────────────
@@ -271,6 +287,7 @@ model Collection {
   items     SavedPost[]
 
   @@index([userId])
+  @@schema("kivo")
 }
 
 model SavedPost {
@@ -285,6 +302,7 @@ model SavedPost {
 
   @@unique([userId, postId])
   @@index([collectionId])
+  @@schema("kivo")
 }
 
 // ─── Moments (24h stories) ───────────────────────────────────────────────────
@@ -293,10 +311,10 @@ model Moment {
   id         String   @id @default(cuid())
   authorId   String
   author     User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
-  type       String   @default("text") // text | image | video | poll
+  type       String   @default("text")
   content    String   @default("")
   mediaUrl   String?
-  mediaType  String?  // image | video (when type is media)
+  mediaType  String?
   background String?
   expiresAt  DateTime
   createdAt  DateTime @default(now())
@@ -304,6 +322,8 @@ model Moment {
   views     MomentView[]
   reactions MomentReaction[]
   poll      Poll?
+
+  @@schema("kivo")
 }
 
 model MomentView {
@@ -316,6 +336,7 @@ model MomentView {
 
   @@unique([momentId, userId])
   @@index([momentId])
+  @@schema("kivo")
 }
 
 model MomentReaction {
@@ -329,6 +350,7 @@ model MomentReaction {
 
   @@unique([momentId, userId])
   @@index([momentId])
+  @@schema("kivo")
 }
 
 // ─── Spaces (communities) ────────────────────────────────────────────────────
@@ -349,6 +371,8 @@ model Space {
 
   members SpaceMember[]
   posts   Post[]
+
+  @@schema("kivo")
 }
 
 model SpaceMember {
@@ -357,12 +381,12 @@ model SpaceMember {
   space     Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  // OWNER | ADMIN | MEMBER
   role      String   @default("MEMBER")
   createdAt DateTime @default(now())
 
   @@unique([spaceId, userId])
   @@index([userId])
+  @@schema("kivo")
 }
 
 // ─── Notifications ───────────────────────────────────────────────────────────
@@ -373,16 +397,16 @@ model Notification {
   user      User      @relation("recipient", fields: [userId], references: [id], onDelete: Cascade)
   actorId   String?
   actor     User?     @relation("actor", fields: [actorId], references: [id], onDelete: Cascade)
-  // reaction | comment | reply | follow | follow_request | follow_accept | mention | space_post
   type      String
   postId    String?
   commentId String?
   spaceId   String?
   spaceName String?
-  preview   String?   // short text snippet (e.g. comment content)
-  postPreview String? // short snippet of the related post
+  preview   String?
+  postPreview String?
   readAt    DateTime?
   createdAt DateTime  @default(now())
 
   @@index([userId, readAt, createdAt])
+  @@schema("kivo")
 }
