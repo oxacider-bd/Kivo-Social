@@ -1,0 +1,387 @@
+// KIVO — Social, but cleaner.
+// Relational schema designed to map 1:1 onto PostgreSQL/Supabase later.
+// SQLite has no enums -> state fields are strings validated at the service layer.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Auth ────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String          @id @default(cuid())
+  email        String          @unique
+  passwordHash String
+  // Supabase Auth identity for this account (set by the auth bridge).
+  // Null for legacy local-only accounts (e.g. the seeded demo users).
+  supabaseId   String?         @unique
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  profile      Profile?
+  sessions     Session[]
+  resetTokens  PasswordReset[]
+  posts        Post[]
+  comments     Comment[]
+  reactions    Reaction[]
+  commentReactions CommentReaction[]
+  pollVotes    PollVote[]
+  savedPosts   SavedPost[]
+  collections  Collection[]
+  moments      Moment[]
+  momentViews  MomentView[]
+  momentReactions MomentReaction[]
+  followers    Follow[]        @relation("following")
+  following    Follow[]        @relation("follower")
+  requestsSent FollowRequest[] @relation("requester")
+  requestsIn   FollowRequest[] @relation("target")
+  notifications Notification[] @relation("recipient")
+  actorNotifications Notification[] @relation("actor")
+  spaceMemberships SpaceMember[]
+  ownedSpaces  Space[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model PasswordReset {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+// ─── Profiles ────────────────────────────────────────────────────────────────
+
+model Profile {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  username          String   @unique
+  fullName          String
+  bio               String   @default("")
+  avatarUrl         String?
+  coverUrl          String?
+  mood              String   @default("")
+  isPrivate         Boolean  @default(false)
+  // PUBLIC | FOLLOWERS | ONLY_ME — default privacy for new posts
+  defaultPrivacy    String   @default("PUBLIC")
+  // JSON string: {reactions,comments,replies,follows,mentions,spaceActivity}
+  notificationPrefs String   @default("{}")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+// ─── Follows ─────────────────────────────────────────────────────────────────
+
+model Follow {
+  id          String   @id @default(cuid())
+  followerId  String
+  follower    User     @relation("follower", fields: [followerId], references: [id], onDelete: Cascade)
+  followingId String
+  following   User     @relation("following", fields: [followingId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+
+  @@unique([followerId, followingId])
+  @@index([followingId])
+}
+
+model FollowRequest {
+  id          String   @id @default(cuid())
+  requesterId String
+  requester   User     @relation("requester", fields: [requesterId], references: [id], onDelete: Cascade)
+  targetId    String
+  target      User     @relation("target", fields: [targetId], references: [id], onDelete: Cascade)
+  status      String   @default("PENDING") // PENDING | ACCEPTED
+  createdAt   DateTime @default(now())
+
+  @@unique([requesterId, targetId])
+  @@index([targetId, status])
+}
+
+// ─── Posts ───────────────────────────────────────────────────────────────────
+
+model Post {
+  id              String   @id @default(cuid())
+  authorId        String
+  author          User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  content         String   @default("")
+  // PUBLIC | FOLLOWERS | ONLY_ME
+  privacy         String   @default("PUBLIC")
+  feeling         String?
+  linkUrl         String?
+  linkTitle       String?
+  linkDescription String?
+  linkImage       String?
+  spaceId         String?
+  space           Space?   @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  media        PostMedia[]
+  reactions    Reaction[]
+  comments     Comment[]
+  poll         Poll?
+  savedBy      SavedPost[]
+  hashtags     PostHashtag[]
+
+  @@index([authorId, createdAt])
+  @@index([spaceId, createdAt])
+}
+
+model PostMedia {
+  id       String  @id @default(cuid())
+  postId   String
+  post     Post    @relation(fields: [postId], references: [id], onDelete: Cascade)
+  url      String
+  type     String  @default("image") // image | video
+  width    Int?
+  height   Int?
+  position Int     @default(0)
+
+  @@index([postId])
+}
+
+model Reaction {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  postId    String
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  // LOVE | FUNNY | WOW | SAD | FIRE | SUPPORT
+  type      String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, postId])
+  @@index([postId])
+}
+
+model Comment {
+  id        String    @id @default(cuid())
+  postId    String
+  post      Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parentId  String?
+  parent    Comment?  @relation("Thread", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   Comment[] @relation("Thread")
+  content   String
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  reactions CommentReaction[]
+
+  @@index([postId, createdAt])
+  @@index([parentId])
+}
+
+model CommentReaction {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  commentId String
+  comment   Comment  @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  type      String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, commentId])
+  @@index([commentId])
+}
+
+// ─── Polls (posts + moments) ─────────────────────────────────────────────────
+
+model Poll {
+  id       String       @id @default(cuid())
+  postId   String?      @unique
+  post     Post?        @relation(fields: [postId], references: [id], onDelete: Cascade)
+  momentId String?      @unique
+  moment   Moment?      @relation(fields: [momentId], references: [id], onDelete: Cascade)
+  options  PollOption[]
+  endsAt   DateTime?
+}
+
+model PollOption {
+  id      String     @id @default(cuid())
+  pollId  String
+  poll    Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  text    String
+  position Int       @default(0)
+  votes   PollVote[]
+
+  @@index([pollId])
+}
+
+model PollVote {
+  id       String     @id @default(cuid())
+  pollId   String
+  optionId String
+  option   PollOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([pollId, userId])
+  @@index([optionId])
+}
+
+// ─── Hashtags ────────────────────────────────────────────────────────────────
+
+model Hashtag {
+  id        String        @id @default(cuid())
+  tag       String        @unique
+  createdAt DateTime      @default(now())
+  posts     PostHashtag[]
+}
+
+model PostHashtag {
+  postId    String
+  post      Post    @relation(fields: [postId], references: [id], onDelete: Cascade)
+  hashtagId String
+  hashtag   Hashtag @relation(fields: [hashtagId], references: [id], onDelete: Cascade)
+
+  @@id([postId, hashtagId])
+  @@index([hashtagId])
+}
+
+// ─── Saved posts + Collections ───────────────────────────────────────────────
+
+model Collection {
+  id        String      @id @default(cuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  createdAt DateTime    @default(now())
+  items     SavedPost[]
+
+  @@index([userId])
+}
+
+model SavedPost {
+  id          String      @id @default(cuid())
+  userId      String
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  postId      String
+  post        Post        @relation(fields: [postId], references: [id], onDelete: Cascade)
+  collectionId String?
+  collection  Collection? @relation(fields: [collectionId], references: [id], onDelete: SetNull)
+  createdAt   DateTime    @default(now())
+
+  @@unique([userId, postId])
+  @@index([collectionId])
+}
+
+// ─── Moments (24h stories) ───────────────────────────────────────────────────
+
+model Moment {
+  id         String   @id @default(cuid())
+  authorId   String
+  author     User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  type       String   @default("text") // text | image | video | poll
+  content    String   @default("")
+  mediaUrl   String?
+  mediaType  String?  // image | video (when type is media)
+  background String?
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  views     MomentView[]
+  reactions MomentReaction[]
+  poll      Poll?
+}
+
+model MomentView {
+  id       String   @id @default(cuid())
+  momentId String
+  moment   Moment   @relation(fields: [momentId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([momentId, userId])
+  @@index([momentId])
+}
+
+model MomentReaction {
+  id       String   @id @default(cuid())
+  momentId String
+  moment   Moment   @relation(fields: [momentId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type     String
+  createdAt DateTime @default(now())
+
+  @@unique([momentId, userId])
+  @@index([momentId])
+}
+
+// ─── Spaces (communities) ────────────────────────────────────────────────────
+
+model Space {
+  id           String   @id @default(cuid())
+  slug         String   @unique
+  name         String
+  description  String   @default("")
+  coverUrl     String?
+  avatarUrl    String?
+  rules        String   @default("")
+  announcement String   @default("")
+  createdById  String
+  createdBy    User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  members SpaceMember[]
+  posts   Post[]
+}
+
+model SpaceMember {
+  id        String   @id @default(cuid())
+  spaceId   String
+  space     Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // OWNER | ADMIN | MEMBER
+  role      String   @default("MEMBER")
+  createdAt DateTime @default(now())
+
+  @@unique([spaceId, userId])
+  @@index([userId])
+}
+
+// ─── Notifications ───────────────────────────────────────────────────────────
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation("recipient", fields: [userId], references: [id], onDelete: Cascade)
+  actorId   String?
+  actor     User?     @relation("actor", fields: [actorId], references: [id], onDelete: Cascade)
+  // reaction | comment | reply | follow | follow_request | follow_accept | mention | space_post
+  type      String
+  postId    String?
+  commentId String?
+  spaceId   String?
+  spaceName String?
+  preview   String?   // short text snippet (e.g. comment content)
+  postPreview String? // short snippet of the related post
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt, createdAt])
+}
