@@ -27,11 +27,17 @@ export interface SupabasePing {
   detail?: string;
 }
 
-let cachedEnv: SupabaseEnv | null = null;
+// Placeholder URL used during build when env vars are not set
+const PLACEHOLDER_URL = "https://placeholder.supabase.co";
+const PLACEHOLDER_KEY = "placeholder-key";
 
-/** Reads + validates the Supabase env vars. Returns null during build if unset. */
+let cachedEnv: SupabaseEnv | null = null;
+let envChecked = false;
+
+/** Reads + validates the Supabase env vars. Returns null during build if unset/invalid. */
 export function getSupabaseEnv(): SupabaseEnv | null {
-  if (cachedEnv) return cachedEnv;
+  if (envChecked) return cachedEnv;
+  envChecked = true;
 
   const rawUrl = (
     process.env.VITE_SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -41,23 +47,21 @@ export function getSupabaseEnv(): SupabaseEnv | null {
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
   )?.trim();
 
+  // If missing, return null (graceful fallback for build time)
   if (!rawUrl || !publishableKey) {
-    if (process.env.NEXT_RUNTIME === 'nodejs' || !process.env.NEXT_RUNTIME) {
-      return null;
-    }
-    throw new Error(
-      "Supabase is not configured. Set VITE_SUPABASE_URL and " +
-        "VITE_SUPABASE_PUBLISHABLE_KEY (or NEXT_PUBLIC_ equivalents) in the project environment (.env)."
-    );
+    return null;
   }
 
+  // Validate URL format
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
   } catch {
+    console.warn("[supabase] Invalid Supabase URL, returning null:", rawUrl);
     return null;
   }
   if (parsed.protocol !== "https:") {
+    console.warn("[supabase] Supabase URL must use https:", rawUrl);
     return null;
   }
 
@@ -67,6 +71,19 @@ export function getSupabaseEnv(): SupabaseEnv | null {
     projectRef: parsed.hostname.split(".")[0] ?? "",
   };
   return cachedEnv;
+}
+
+/** Returns a safe SupabaseEnv for build time - uses placeholders if real env vars are missing. */
+export function getSupabaseEnvForBuild(): SupabaseEnv {
+  const env = getSupabaseEnv();
+  if (env) return env;
+  
+  // During build, use placeholder to prevent ERR_INVALID_URL
+  return {
+    url: PLACEHOLDER_URL,
+    publishableKey: PLACEHOLDER_KEY,
+    projectRef: "placeholder",
+  };
 }
 
 /** Non-throwing config check — safe to call in UI code paths. */
@@ -102,7 +119,18 @@ export function getCurrentSupabaseAccessToken(): string | null {
 export function getSupabaseBrowserClient(): SupabaseClient {
   const env = getSupabaseEnv();
   if (!env) {
-    throw new Error("Supabase is not configured. Set environment variables first.");
+    // During build or when not configured, use placeholder
+    const buildEnv = getSupabaseEnvForBuild();
+    if (!browserClient) {
+      browserClient = createClient(buildEnv.url, buildEnv.publishableKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      });
+    }
+    return browserClient;
   }
   if (!browserClient) {
     browserClient = createClient(env.url, env.publishableKey, {
@@ -120,10 +148,9 @@ export function getSupabaseBrowserClient(): SupabaseClient {
 /** Fresh per-request Supabase client for API routes / server code (publishable key only). */
 export function createSupabaseServerClient(): SupabaseClient {
   const env = getSupabaseEnv();
-  if (!env) {
-    throw new Error("Supabase is not configured. Set environment variables first.");
-  }
-  return createClient(env.url, env.publishableKey, {
+  const buildEnv = getSupabaseEnvForBuild();
+  const config = env || buildEnv;
+  return createClient(config.url, config.publishableKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 }

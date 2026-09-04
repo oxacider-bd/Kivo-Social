@@ -13,8 +13,20 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+function getMetadataBase(): URL {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (appUrl && appUrl.startsWith("http")) {
+    try {
+      return new URL(appUrl);
+    } catch {
+      // Invalid URL, fallback
+    }
+  }
+  return new URL("http://localhost:3000");
+}
+
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"),
+  metadataBase: getMetadataBase(),
   title: "KIVO — Social, but cleaner.",
   description:
     "KIVO is a fast, modern social space. Share moments, join Spaces, and keep your conversations clean.",
