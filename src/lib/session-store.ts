@@ -175,6 +175,12 @@ export const useSession = create<SessionState>((set) => ({
             return hydrated;
           } catch (err) {
             console.warn("[kivo-auth] Supabase session bridge failed; trying app cookie.", err);
+            // Bridge failed — try legacy session as fallback
+            const legacy = await api<SessionUser | null>("/api/auth/session");
+            if (legacy) {
+              set({ user: legacy, status: "authenticated" });
+              return legacy;
+            }
           }
         } else {
           // No Supabase session - try legacy session

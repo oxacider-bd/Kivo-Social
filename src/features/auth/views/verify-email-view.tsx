@@ -20,16 +20,15 @@ import { getSupabaseBrowserClient } from "@/lib/supabase";
 /**
  * "Verify your email" — the dedicated screen for signup email confirmation.
  *
- * Supabase Auth emails the real 6-digit code ({{ .Token }} template); this
- * screen collects it and hands it to supabase.auth.verifyOtp() via the auth
- * service. Only the pending email (never the code, never the password) lives
- * in sessionStorage so a normal refresh keeps the flow alive.
+ * After OTP verification, we auto-login by:
+ * 1. Using the session returned directly from verifyOtp (if available)
+ * 2. Polling getSession() until Supabase establishes the session
+ * 3. Signing in with the stored password as fallback
+ *
+ * We NEVER redirect to /login after successful OTP verification.
  */
 
 const OTP_LENGTH = 6;
-/** Seconds before "Resend code" becomes available again (Supabase allows
- *  resending at any time; the cooldown protects users from hammering the
- *  email rate limit). */
 const RESEND_COOLDOWN_SECONDS = 60;
 
 export default function VerifyEmailView() {
@@ -40,45 +39,57 @@ export default function VerifyEmailView() {
   const [verifying, setVerifying] = useState(false);
   const [verified, setVerified] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [errorNonce, setErrorNonce] = useState(0); // re-triggers the slot shake
-  const [status, setStatus] = useState<string | null>(null); // aria-live (resend ok)
+  const [errorNonce, setErrorNonce] = useState(0);
+  const [status, setStatus] = useState<string | null>(null);
 
   const [resending, setResending] = useState(false);
   const [resendIn, setResendIn] = useState(() => {
-    // Restore a fair cooldown after a refresh: 60s from the last code request.
     const elapsed = pending.current
       ? Math.floor((Date.now() - pending.current.at) / 1000)
       : RESEND_COOLDOWN_SECONDS;
     return Math.max(0, RESEND_COOLDOWN_SECONDS - elapsed);
   });
 
-  // No pending verification (new tab / already cleared) → back to signup.
   useEffect(() => {
     if (!email) navigateTo("/signup", { replace: true });
   }, [email]);
 
-  // Resend countdown.
   useEffect(() => {
     if (resendIn <= 0) return;
     const t = setTimeout(() => setResendIn((s) => s - 1), 1000);
     return () => clearTimeout(t);
   }, [resendIn]);
 
-  /** Wait for Supabase auth state to settle after verifyOtp. */
-  async function waitForSession(maxMs = 5000): Promise<boolean> {
+  /** Poll for session after verifyOtp — Supabase may need a moment. */
+  async function waitForSession(maxMs = 8000): Promise<boolean> {
     const supabase = getSupabaseBrowserClient();
     const start = Date.now();
     while (Date.now() - start < maxMs) {
-      const { data } = await supabase.auth.getSession();
-      if (data.session?.user) return true;
-      await new Promise((r) => setTimeout(r, 150));
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (data.session?.user) return true;
+      } catch {
+        // transient — keep polling
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return false;
+  }
+
+  /** Try to establish the app session and navigate to home. */
+  async function enterApp(): Promise<boolean> {
+    const user = await useSession.getState().refresh();
+    if (user) {
+      toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
+      navigateTo("/", { replace: true });
+      return true;
     }
     return false;
   }
 
   async function onVerify(e: FormEvent) {
     e.preventDefault();
-    if (verifying || verified) return; // no duplicate requests
+    if (verifying || verified) return;
     if (!email) return;
     if (code.length !== OTP_LENGTH) {
       setError(`Enter all ${OTP_LENGTH} digits of the code.`);
@@ -94,47 +105,55 @@ export default function VerifyEmailView() {
       clearPendingVerification();
       setStatus("Email verified. Signing you in…");
 
-      // Method 1: If verifyOtp returned a session, use it directly
+      // Method 1: verifyOtp returned a session — use it directly
       if (session?.user) {
-        const user = await useSession.getState().refresh();
-        if (user) {
-          toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
-          setTimeout(() => navigateTo("/", { replace: true }), 800);
-          return;
-        }
+        if (await enterApp()) return;
       }
 
-      // Method 2: Wait for Supabase to establish the session
-      const sessionReady = await waitForSession(3000);
-      if (sessionReady) {
-        const user = await useSession.getState().refresh();
-        if (user) {
-          toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
-          setTimeout(() => navigateTo("/", { replace: true }), 800);
-          return;
-        }
+      // Method 2: Poll for Supabase session (may take a moment to settle)
+      setStatus("Waiting for session to establish…");
+      if (await waitForSession(8000)) {
+        if (await enterApp()) return;
       }
 
-      // Method 3: Try signing in with stored password
+      // Method 3: Try signing in with stored password (signup stores it)
       const storedPassword = window.sessionStorage.getItem("signup_password");
       if (storedPassword) {
+        setStatus("Signing in with your credentials…");
         try {
           await signIn(email, storedPassword);
           window.sessionStorage.removeItem("signup_password");
-          const user = await useSession.getState().refresh();
-          if (user) {
-            toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
-            setTimeout(() => navigateTo("/", { replace: true }), 800);
-            return;
-          }
+          if (await enterApp()) return;
         } catch {
-          // signIn failed, fall through to redirect
+          // signIn failed — fall through to final attempt
         }
       }
 
-      // Method 4: Last resort - redirect to login with success message
-      toast.success("Email verified! Please sign in.", { duration: 5000 });
-      setTimeout(() => navigateTo("/login", { replace: true }), 1000);
+      // Method 4: Last resort — try signInWithPassword directly with stored password
+      if (storedPassword) {
+        try {
+          const supabase = getSupabaseBrowserClient();
+          const { error: signInErr } = await supabase.auth.signInWithPassword({
+            email,
+            password: storedPassword,
+          });
+          if (!signInErr) {
+            window.sessionStorage.removeItem("signup_password");
+            if (await enterApp()) return;
+          }
+        } catch {
+          // fall through
+        }
+      }
+
+      // If everything failed, show the user a helpful message — do NOT redirect to /login
+      setStatus(null);
+      setVerified(false);
+      setError(
+        "Verification succeeded but we couldn't sign you in automatically. " +
+        "Please try signing in with your email and password."
+      );
+      setErrorNonce((n) => n + 1);
     } catch (err) {
       setVerified(false);
       setError(err instanceof Error ? err.message : "Couldn't verify your email right now. Please try again.");
@@ -155,8 +174,6 @@ export default function VerifyEmailView() {
       setStatus(`A new code is on its way to ${email}.`);
       toast("New code sent", { description: email });
     } catch (err) {
-      // Rate limits and failures surface as polished KIVO messages
-      // (mapSupabaseError) — never raw Supabase errors.
       setError(err instanceof Error ? err.message : "Couldn't send a new code right now. Please try again.");
     } finally {
       setResending(false);
@@ -164,8 +181,6 @@ export default function VerifyEmailView() {
   }
 
   function onChangeEmail() {
-    // Back to the signup form, prefilled — no duplicate account is created
-    // (Supabase re-sends for an unconfirmed address instead of duplicating).
     try {
       window.sessionStorage.setItem(SIGNUP_PREFILL_EMAIL_KEY, email);
     } catch {
@@ -225,7 +240,7 @@ export default function VerifyEmailView() {
               value={code}
               onChange={(digits) => {
                 setCode(digits);
-                if (error) setError(null); // clear invalid state as the user edits
+                if (error) setError(null);
               }}
               length={OTP_LENGTH}
               disabled={verifying}
@@ -234,7 +249,6 @@ export default function VerifyEmailView() {
               describedBy={error ? "otp-error" : "otp-status"}
             />
 
-            {/* Screen-reader status (resend success / progress) */}
             <p id="otp-status" className="sr-only" aria-live="polite">
               {status ?? (verifying ? "Verifying your code…" : "")}
             </p>

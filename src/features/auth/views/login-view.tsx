@@ -28,15 +28,13 @@ export default function LoginView() {
     setLoading(true);
     try {
       await signIn(email.trim(), password);
-      // Resolve the centralized auth state (bridge + profile) before entering.
       const user = await useSession.getState().refresh();
-      if (!user) throw new Error("Could not sign you in. Try again.");
+      if (!user) throw new Error("Signed in but couldn't load your profile. Please try again.");
       toast(`Welcome back, ${user.profile.fullName.split(" ")[0]}!`);
       navigateTo("/", { replace: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not sign you in. Try again.";
       setError(message);
-      // Unverified signup — offer the dedicated OTP verification screen.
       setNeedsVerification(/verify your email/i.test(message));
     } finally {
       setLoading(false);

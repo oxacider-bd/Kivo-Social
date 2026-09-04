@@ -69,19 +69,25 @@ export async function signInDemo(): Promise<SessionUser> {
  */
 export async function signIn(email: string, password: string): Promise<"supabase" | "local"> {
   const supabase = getSupabaseBrowserClient();
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (!error) return "supabase";
 
   const isBadCredentials =
     (error.code ?? "") === "invalid_credentials" || /invalid login credentials/i.test(error.message);
   if (isBadCredentials) {
     // Legacy fallback — the demo account predates the Supabase integration.
-    const user = await api<SessionUser>("/api/auth/login", {
-      body: { email, password },
-    });
-    useSession.getState().setUser(user);
-    return "local";
+    try {
+      const user = await api<SessionUser>("/api/auth/login", {
+        body: { email, password },
+      });
+      useSession.getState().setUser(user);
+      return "local";
+    } catch {
+      // Legacy login also failed — throw the Supabase error with context
+      throw new Error("Email or password is incorrect. Please check your credentials and try again.");
+    }
   }
+  // For all other errors (email_not_confirmed, rate_limit, etc.), throw with the actual message
   throw mapSupabaseError(error);
 }
 
