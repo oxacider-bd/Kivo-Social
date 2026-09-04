@@ -41,7 +41,8 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
     });
   } catch (err) {
     if ((err as Error)?.name === "AbortError") throw err;
-    throw new ApiError("NETWORK", "You seem offline. Check your connection.", 0);
+    const errorMsg = err instanceof Error ? err.message : "Unknown error";
+    throw new ApiError("NETWORK", `Connection failed: ${errorMsg}`, 0);
   }
 
   let json: unknown;

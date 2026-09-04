@@ -27,14 +27,10 @@ export interface SupabasePing {
   detail?: string;
 }
 
-// Placeholder URL used during build when env vars are not set
-const PLACEHOLDER_URL = "https://placeholder.supabase.co";
-const PLACEHOLDER_KEY = "placeholder-key";
-
 let cachedEnv: SupabaseEnv | null = null;
 let envChecked = false;
 
-/** Reads + validates the Supabase env vars. Returns null during build if unset/invalid. */
+/** Reads + validates the Supabase env vars. Returns null if unset/invalid. */
 export function getSupabaseEnv(): SupabaseEnv | null {
   if (envChecked) return cachedEnv;
   envChecked = true;
@@ -47,7 +43,7 @@ export function getSupabaseEnv(): SupabaseEnv | null {
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
   )?.trim();
 
-  // If missing, return null (graceful fallback for build time)
+  // If missing, return null
   if (!rawUrl || !publishableKey) {
     return null;
   }
@@ -71,19 +67,6 @@ export function getSupabaseEnv(): SupabaseEnv | null {
     projectRef: parsed.hostname.split(".")[0] ?? "",
   };
   return cachedEnv;
-}
-
-/** Returns a safe SupabaseEnv for build time - uses placeholders if real env vars are missing. */
-export function getSupabaseEnvForBuild(): SupabaseEnv {
-  const env = getSupabaseEnv();
-  if (env) return env;
-  
-  // During build, use placeholder to prevent ERR_INVALID_URL
-  return {
-    url: PLACEHOLDER_URL,
-    publishableKey: PLACEHOLDER_KEY,
-    projectRef: "placeholder",
-  };
 }
 
 /** Non-throwing config check — safe to call in UI code paths. */
@@ -115,22 +98,17 @@ export function getCurrentSupabaseAccessToken(): string | null {
  * - Sessions persist in localStorage and refresh automatically.
  * - `detectSessionInUrl` exchanges the `?code=` from password-recovery and
  *   email-confirmation links (PKCE flow) into a real session on load.
+ * 
+ * IMPORTANT: Browser client MUST have real env vars. Never use placeholder URLs.
  */
 export function getSupabaseBrowserClient(): SupabaseClient {
   const env = getSupabaseEnv();
   if (!env) {
-    // During build or when not configured, use placeholder
-    const buildEnv = getSupabaseEnvForBuild();
-    if (!browserClient) {
-      browserClient = createClient(buildEnv.url, buildEnv.publishableKey, {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-          detectSessionInUrl: false,
-        },
-      });
-    }
-    return browserClient;
+    // Throw a clear error instead of using placeholder (causes "offline" error)
+    throw new Error(
+      "Supabase is not configured. Please set NEXT_PUBLIC_SUPABASE_URL and " +
+      "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY in your environment variables."
+    );
   }
   if (!browserClient) {
     browserClient = createClient(env.url, env.publishableKey, {
@@ -145,12 +123,14 @@ export function getSupabaseBrowserClient(): SupabaseClient {
   return browserClient;
 }
 
-/** Fresh per-request Supabase client for API routes / server code (publishable key only). */
-export function createSupabaseServerClient(): SupabaseClient {
+/**
+ * Fresh per-request Supabase client for API routes / server code (publishable key only).
+ * Returns null instead of throwing if not configured (for graceful handling).
+ */
+export function createSupabaseServerClient(): SupabaseClient | null {
   const env = getSupabaseEnv();
-  const buildEnv = getSupabaseEnvForBuild();
-  const config = env || buildEnv;
-  return createClient(config.url, config.publishableKey, {
+  if (!env) return null;
+  return createClient(env.url, env.publishableKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 }

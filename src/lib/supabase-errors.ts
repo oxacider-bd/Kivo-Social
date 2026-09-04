@@ -113,7 +113,11 @@ export function mapSupabaseError(error: RawAuthErrorLike): Error {
     return new Error("We couldn't create your account. Your email or username may already be in use.");
   }
   if (/failed to fetch|networkerror|load failed/i.test(msg)) {
-    return new Error("You seem offline. Check your connection and try again.");
+    // Show actual error context instead of generic "offline" message
+    if (/supabase|auth/i.test(msg)) {
+      return new Error(`Connection failed: ${msg}`);
+    }
+    return new Error("Network error. Please check your connection and try again.");
   }
   if (error.status === 42501 || /row-level security|permission denied/i.test(msg)) {
     return new Error("You don't have permission to do that.");
