@@ -47,7 +47,9 @@ async function resolveActorId(token: string): Promise<string | null> {
     return actorCache.id;
   }
   try {
-    const { data, error } = await createSupabaseServerClient().auth.getUser(token);
+    const supabase = createSupabaseServerClient();
+    if (!supabase) return null;
+    const { data, error } = await supabase.auth.getUser(token);
     const id = error ? null : (data.user?.id ?? null);
     if (id) actorCache = { token, id, at: Date.now() };
     return id;

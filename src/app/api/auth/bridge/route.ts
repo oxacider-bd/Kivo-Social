@@ -25,6 +25,9 @@ export const POST = route(async ({ req }: { req: NextRequest }) => {
 
   try {
     const supabase = createSupabaseServerClient();
+    if (!supabase) {
+      return fail("SERVER_ERROR", "Supabase client unavailable. Please try again.", 500);
+    }
     const { data, error } = await supabase.auth.getUser(body.accessToken);
     supabaseUser = data.user;
     email = supabaseUser?.email?.toLowerCase() ?? null;
