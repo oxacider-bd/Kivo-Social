@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useSession } from "@/lib/session-store";
 import { navigateTo } from "@/lib/router";
-import { verifyEmailOtp, resendSignupOtp } from "@/services/auth";
+import { verifyEmailOtp, resendSignupOtp, signIn } from "@/services/auth";
 import {
   clearPendingVerification,
   getPendingVerification,
@@ -15,6 +15,7 @@ import { OtpInput } from "@/features/auth/components/otp-input";
 import { Button } from "@/components/ui/button";
 import { Check, Loader2, MailCheck } from "lucide-react";
 import { toast } from "sonner";
+import { getSupabaseBrowserClient } from "@/lib/supabase";
 
 /**
  * "Verify your email" — the dedicated screen for signup email confirmation.
@@ -63,6 +64,18 @@ export default function VerifyEmailView() {
     return () => clearTimeout(t);
   }, [resendIn]);
 
+  /** Wait for Supabase auth state to settle after verifyOtp. */
+  async function waitForSession(maxMs = 5000): Promise<boolean> {
+    const supabase = getSupabaseBrowserClient();
+    const start = Date.now();
+    while (Date.now() - start < maxMs) {
+      const { data } = await supabase.auth.getSession();
+      if (data.session?.user) return true;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    return false;
+  }
+
   async function onVerify(e: FormEvent) {
     e.preventDefault();
     if (verifying || verified) return; // no duplicate requests
@@ -79,10 +92,10 @@ export default function VerifyEmailView() {
       const { session } = await verifyEmailOtp(email, code);
       setVerified(true);
       clearPendingVerification();
+      setStatus("Email verified. Signing you in…");
 
+      // Method 1: If verifyOtp returned a session, use it directly
       if (session?.user) {
-        // Auto-login succeeded — session is already persisted by Supabase client
-        setStatus("Email verified. Taking you into KIVO…");
         const user = await useSession.getState().refresh();
         if (user) {
           toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
@@ -91,13 +104,21 @@ export default function VerifyEmailView() {
         }
       }
 
-      // Session not returned — try to sign in with stored password or redirect
-      setStatus("Email verified! Signing you in…");
+      // Method 2: Wait for Supabase to establish the session
+      const sessionReady = await waitForSession(3000);
+      if (sessionReady) {
+        const user = await useSession.getState().refresh();
+        if (user) {
+          toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
+          setTimeout(() => navigateTo("/", { replace: true }), 800);
+          return;
+        }
+      }
+
+      // Method 3: Try signing in with stored password
       const storedPassword = window.sessionStorage.getItem("signup_password");
-      
       if (storedPassword) {
         try {
-          const { signIn } = await import("@/services/auth");
           await signIn(email, storedPassword);
           window.sessionStorage.removeItem("signup_password");
           const user = await useSession.getState().refresh();
@@ -111,9 +132,9 @@ export default function VerifyEmailView() {
         }
       }
 
-      // Fallback: redirect to login with success message
+      // Method 4: Last resort - redirect to login with success message
       toast.success("Email verified! Please sign in.", { duration: 5000 });
-      setTimeout(() => navigateTo("/login", { replace: true }), 1500);
+      setTimeout(() => navigateTo("/login", { replace: true }), 1000);
     } catch (err) {
       setVerified(false);
       setError(err instanceof Error ? err.message : "Couldn't verify your email right now. Please try again.");
@@ -190,11 +211,12 @@ export default function VerifyEmailView() {
 
         {verified ? (
           <div
-            className="mt-8 flex justify-center"
+            className="mt-8 flex flex-col items-center gap-3"
             role="status"
             aria-live="polite"
           >
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" aria-hidden="true" />
+            <p className="text-sm text-muted-foreground">{status}</p>
           </div>
         ) : (
           <form onSubmit={onVerify} className="mt-8 space-y-5" noValidate>
