@@ -1,10 +1,4 @@
 ﻿// Production two-user realtime notification E2E.
-// 1. two disposable mailboxes + two real Supabase signups (OTP read from inbox)
-// 2. both users complete the app bridge (mirror user + app cookie)
-// 3. user B subscribes to Supabase Realtime postgres_changes (recipient filter, RLS)
-// 4. user A follows user B via the app API (cookie + Bearer)
-// 5. assert: row in public.notifications (B REST read), realtime event received,
-//    unread count >= 1, list contains it, mark-all-read persists is_read via ref_id.
 // Prints statuses + safe details only (never tokens, passwords or OTPs).
 import { createClient } from "@supabase/supabase-js";
 
@@ -25,12 +19,20 @@ async function createMailbox(tagName) {
   const domain = d.body?.["hydra:member"]?.[0]?.domain;
   const addr = `kivort${tagName}${Math.random().toString(36).slice(2, 7)}@${domain}`;
   const pass = crypto.randomUUID() + "!Aa1";
-  const acc = await jfetch("https://api.mail.tm/accounts", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ address: addr, password: pass }),
-  });
-  if (!acc.res.ok) throw new Error("mailbox create failed " + acc.res.status);
+  let acc = null;
+  for (let i = 0; i < 10 && !acc; i++) {
+    if (i > 0) {
+      console.log("mailbox throttled, retrying in 45s");
+      await sleep(45_000);
+    }
+    const attempt = await jfetch("https://api.mail.tm/accounts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ address: addr, password: pass }),
+    });
+    if (attempt.res.ok) acc = attempt;
+  }
+  if (!acc) throw new Error("mailbox create failed (throttled)");
   const tok = await jfetch("https://api.mail.tm/token", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -77,7 +79,7 @@ async function signupSupabase(email, username) {
       console.log(`SIGNUP_FAIL(${username}):`, res.status, body?.error_code ?? "-", body?.msg ?? "-");
       process.exit(1);
     }
-    console.log(`signup throttled (${username}) attempt ${attempt} - waiting 60s`);
+    if (attempt % 5 === 0) console.log(`signup throttled (${username}) attempt ${attempt} - still waiting`);
     await sleep(60_000);
   }
   console.log(`SIGNUP_QUOTA_EXHAUSTED(${username})`);
