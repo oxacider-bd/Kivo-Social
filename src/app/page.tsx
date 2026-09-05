@@ -118,16 +118,33 @@ function useRealtime() {
   const status = useSession((s) => s.status);
   const queryClient = useQueryClient();
   const lastRefresh = useRef(0);
+  // Realtime dedupe — one toast/bump per notification id per tab (bounded).
+  const seenIds = useRef<Set<string>>(new Set());
 
   const onNotification = useCallback(
     (n: NotificationDTO) => {
+      if (seenIds.current.has(n.id)) return; // re-delivery (reconnect/replay)
+      seenIds.current.add(n.id);
+      if (seenIds.current.size > 200) {
+        seenIds.current = new Set([...seenIds.current].slice(-100));
+      }
+
       window.dispatchEvent(new CustomEvent(KIVO_NOTIFICATION_EVENT));
+
+      // Optimistic unread bump (realtime INSERTs are always unread), then let
+      // the refetched server count correct it if needed.
+      queryClient.setQueryData<number>(UNREAD_COUNT_KEY, (count) =>
+        typeof count === "number" ? count + 1 : count,
+      );
       void queryClient.invalidateQueries({ queryKey: UNREAD_COUNT_KEY });
+
+      // Only the notification queries refresh — never the feed, never a reload.
       const now = Date.now();
       if (now - lastRefresh.current > 3000) {
         lastRefresh.current = now;
         void queryClient.invalidateQueries({ queryKey: ["notifications"] });
       }
+
       const who = n.actor?.fullName ?? "Someone";
       const what = NOTIFICATION_COPY[n.type] ?? "sent you a notification";
       toast(`${who} ${what}`, {

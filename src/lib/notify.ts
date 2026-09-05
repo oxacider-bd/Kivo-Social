@@ -30,6 +30,14 @@ export function emitRealtime(userIds: string[], event: string, payload: unknown)
 // Supabase Realtime (postgres_changes, filtered by recipient_id). The insert
 // runs under the ACTOR's verified access token (forwarded by the API client),
 // so RLS remains the authorization layer — no service-role key is ever used.
+//
+// `ref_id` carries the app notification id so the recipient's client can sync
+// read-state back to the same row later (single durable record per action).
+
+/** App taxonomy → Supabase taxonomy (public.notification_type enum). */
+const SUPABASE_TYPE_BY_APP: Record<string, string> = {
+  space_post: "space_activity",
+};
 
 let actorCache: { token: string; id: string; at: number } | null = null;
 const ACTOR_CACHE_TTL_MS = 60_000;
@@ -67,6 +75,7 @@ async function fanOutToSupabaseRealtime(
   recipientSupabaseId: string,
   input: NotifyInput,
   message: string | null,
+  refId: string,
 ): Promise<void> {
   try {
     if (!isSupabaseConfigured()) return;
@@ -90,7 +99,8 @@ async function fanOutToSupabaseRealtime(
       body: JSON.stringify({
         recipient_id: recipientSupabaseId,
         actor_id: actorId,
-        type: input.type,
+        type: SUPABASE_TYPE_BY_APP[input.type] ?? input.type,
+        ref_id: refId,
         post_id: input.postId ?? null,
         comment_id: input.commentId ?? null,
         space_id: input.spaceId ?? null,
@@ -220,7 +230,7 @@ export async function notify(input: NotifyInput) {
     // Supabase Realtime delivery (production transport — see fanOut above).
     const message = notification.preview ?? notification.postPreview ?? null;
     if (recipient.supabaseId) {
-      void fanOutToSupabaseRealtime(recipient.supabaseId, input, message);
+      void fanOutToSupabaseRealtime(recipient.supabaseId, input, message, notification.id);
     }
   } catch (err) {
     console.error("[notify] failed:", err);

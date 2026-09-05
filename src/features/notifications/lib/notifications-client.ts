@@ -1,6 +1,8 @@
 "use client";
 
 import { api } from "@/lib/api";
+import { getSupabaseBrowserClient } from "@/lib/supabase";
+import { useSession } from "@/lib/session-store";
 import type { QueryClient } from "@tanstack/react-query";
 import type { Page } from "@/types";
 import type { EnrichedNotification, NotificationFilter, NotificationsPayload } from "../types";
@@ -44,6 +46,32 @@ export async function fetchNotificationsPage(
 export async function fetchUnreadCount(signal?: AbortSignal): Promise<number> {
   const data = await api<{ count: number }>("/api/notifications/unread-count", { signal });
   return data.count;
+}
+
+// ─── Supabase read-state sync ────────────────────────────────────────────────
+
+/**
+ * Best-effort: mirror read-state into Supabase `public.notifications` — the
+ * durable per-action record (ref_id = the app notification id). The app API
+ * stays authoritative for the UI; this keeps the Supabase rows consistent for
+ * cross-device reads and future consumers (e.g. OneSignal). Never throws.
+ */
+function syncReadStateToSupabase(ids: string[] | null): void {
+  try {
+    const authId = useSession.getState().authId;
+    if (!authId) return; // legacy local account — no Supabase rows exist
+    const update = getSupabaseBrowserClient()
+      .from("notifications")
+      .update({ is_read: true })
+      .eq("recipient_id", authId);
+    const query = ids ? update.in("ref_id", ids) : update.eq("is_read", false);
+    void query.then(
+      () => undefined,
+      () => undefined,
+    );
+  } catch {
+    /* best-effort */
+  }
 }
 
 // ─── Cache patching (optimistic read state) ──────────────────────────────────
@@ -133,6 +161,7 @@ export async function markNotificationsRead(queryClient: QueryClient, ids: strin
       body: { ids },
     });
     queryClient.setQueryData<number>(UNREAD_COUNT_KEY, unreadCount);
+    syncReadStateToSupabase(ids);
   } catch (err) {
     restoreSnapshot(queryClient, snapshot);
     if (typeof prevUnread === "number") {
@@ -157,6 +186,7 @@ export async function markAllNotificationsRead(queryClient: QueryClient): Promis
       body: { all: true },
     });
     queryClient.setQueryData<number>(UNREAD_COUNT_KEY, unreadCount);
+    syncReadStateToSupabase(null);
   } catch (err) {
     restoreSnapshot(queryClient, snapshot);
     if (typeof prevUnread === "number") {

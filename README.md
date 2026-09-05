@@ -70,6 +70,46 @@ The project expects the following to exist in the Supabase dashboard:
 
    Clients subscribe with `recipient_id=eq.<auth.uid()>`, so RLS decides who
    receives events — no data leaves the row owner's session.
+
+   Canonical table + policies (idempotent — matches the production schema):
+
+   ```sql
+   create table if not exists public.notifications (
+     id uuid primary key default gen_random_uuid(),
+     recipient_id uuid not null references public.profiles(id) on delete cascade,
+     actor_id uuid references public.profiles(id) on delete set null,
+     type text not null check (type in ('reaction','comment','reply','follow',
+       'follow_accept','follow_request','mention','space_activity')),
+     ref_id text,                      -- app notification id (read-state sync)
+     post_id text,                     -- app-side ids (kivo schema, cuids)
+     comment_id text,
+     space_id text,
+     message text,
+     is_read boolean not null default false,
+     created_at timestamptz not null default now()
+   );
+   create index if not exists idx_notifications_recipient on public.notifications (recipient_id);
+   create index if not exists idx_notifications_unread on public.notifications (recipient_id, is_read, created_at desc);
+   create index if not exists idx_notifications_ref on public.notifications (ref_id);
+   alter table public.notifications enable row level security;
+   drop policy if exists notifications_select on public.notifications;
+   create policy notifications_select on public.notifications for select
+     to authenticated using (recipient_id = auth.uid());
+   drop policy if exists notifications_insert on public.notifications;
+   create policy notifications_insert on public.notifications for insert
+     to authenticated with check (actor_id = auth.uid());
+   drop policy if exists notifications_update on public.notifications;
+   create policy notifications_update on public.notifications for update
+     to authenticated using (recipient_id = auth.uid()) with check (recipient_id = auth.uid());
+   drop policy if exists notifications_delete on public.notifications;
+   create policy notifications_delete on public.notifications for delete
+     to authenticated using (recipient_id = auth.uid());
+   ```
+
+   The INSERT policy is deliberately `actor_id = auth.uid()`: producers insert
+   under their own verified access token and can only name themselves as the
+   actor (no forged notifications). Read state (`is_read`) is mirrored back by
+   the recipient via `ref_id`.
 3. **Storage buckets** — `avatars`, `covers`, `post-media`, `moment-media`
    (public read; authenticated users may upload only into their own
    `<auth.uid()>/…` folder).
