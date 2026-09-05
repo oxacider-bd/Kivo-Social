@@ -46,6 +46,23 @@ export async function signUp(input: SignUpInput): Promise<SignUpResult> {
     },
   });
   if (error) throw mapSupabaseError(error);
+
+  if (process.env.NODE_ENV !== "production") {
+    // Safe diagnostics — booleans/ids only. Never the password or tokens.
+    console.info("[kivo-auth:dev] signUp result", {
+      hasUser: Boolean(data.user),
+      userId: data.user?.id ?? null,
+      hasSession: Boolean(data.session),
+      identityCount: Array.isArray(data.user?.identities) ? data.user!.identities.length : null,
+    });
+  }
+
+  // GoTrue quirk: signing up with an ALREADY-CONFIRMED email returns 200 with
+  // the user, identities: [] and NO session. That is not a pending signup —
+  // the account exists, so the OTP flow must not swallow the user here.
+  if (!data.session && data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+    throw new Error("An account with this email already exists. Try signing in instead.");
+  }
   if (!data.session) return { status: "confirmation-required" };
   return { status: "signed-in" };
 }

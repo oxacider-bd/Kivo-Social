@@ -77,18 +77,28 @@ export function mapSupabaseError(error: RawAuthErrorLike): Error {
   if (code === "invalid_credentials" || /invalid login credentials/i.test(msg)) {
     return new Error("Email or password is incorrect.");
   }
-  if (code === "email_not_confirmed" || /email not confirmed|confirm.*email/i.test(msg)) {
+  // Email DELIVERY failure (SMTP down / out of quota): GoTrue wraps it as
+  // unexpected_failure — "Error sending confirmation email". This is NOT
+  // "email not confirmed": the account was never created, so the honest
+  // response is a retryable send failure, not the verify-your-email flow.
+  if (
+    code === "unexpected_failure" ||
+    /error sending \w* ?(confirmation|invite|recovery|magic link) email/i.test(msg)
+  ) {
+    return new Error(
+      "We couldn't send your verification email right now — please try again in a moment.",
+    );
+  }
+  if (code === "over_email_send_rate_limit" || code === "over_request_rate_limit" || /rate limit|too many requests/i.test(msg)) {
+    return new Error("Too many attempts. Please wait a minute and try again.");
+  }
+  // The genuine login-recovery case only: an EXISTING account whose email was
+  // never confirmed (GoTrue: code email_not_confirmed / "Email not confirmed").
+  if (code === "email_not_confirmed" || /^email not confirmed$/i.test(msg.trim())) {
     return new Error("Please verify your email first — enter the 6-digit code we emailed you.");
   }
   if (code === "user_not_found" || /user not found/i.test(msg)) {
     return new Error("No account found with that email.");
-  }
-  if (
-    code === "over_email_send_rate_limit" ||
-    code === "over_request_rate_limit" ||
-    /rate limit|too many requests/i.test(msg)
-  ) {
-    return new Error("Too many attempts. Please wait a minute and try again.");
   }
   // Leaked-password protection (when enabled) — a distinct reason users must
   // understand; checked before the generic weak-password mapping.
