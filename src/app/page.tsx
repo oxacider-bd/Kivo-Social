@@ -7,6 +7,7 @@ import { useHashRoute, matchRoute, navigateTo } from "@/lib/router";
 import { useSession } from "@/lib/session-store";
 import { useRealtimeNotifications } from "@/lib/realtime";
 import { api } from "@/lib/api";
+import { initOneSignal, setOneSignalIdentity } from "@/lib/onesignal";
 import { toast } from "sonner";
 import {
   KIVO_NOTIFICATION_EVENT,
@@ -176,7 +177,7 @@ const NOTIFICATION_COPY: Record<string, string> = {
 
 export default function Home() {
   const { path } = useHashRoute();
-  const { status, refresh, bridgeDegraded } = useSession();
+  const { status, refresh, bridgeDegraded, authId } = useSession();
   const route = matchRoute(path);
   const queryClient = useQueryClient();
   const reduce = useReducedMotion() ?? false;
@@ -206,6 +207,27 @@ export default function Home() {
     }
     if (!bridgeDegraded) degradedWarnedRef.current = false;
   }, [bridgeDegraded]);
+
+  // OneSignal Web Push (optional delivery layer) — init once, then map the
+  // stable Supabase identity (login/logout/account switch) to OneSignal.
+  useEffect(() => {
+    void initOneSignal();
+  }, []);
+  useEffect(() => {
+    void setOneSignalIdentity(status === "authenticated" && authId ? authId : null);
+  }, [status, authId]);
+
+  // Push click deep link: /?openPost=<id> opens the thread modal once the
+  // authenticated shell (and its thread opener) is mounted.
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    const openPost = new URLSearchParams(window.location.search).get("openPost");
+    if (!openPost) return;
+    window.dispatchEvent(
+      new CustomEvent("kivo:open-thread", { detail: { postId: openPost } }),
+    );
+    window.history.replaceState(null, "", window.location.pathname + window.location.hash);
+  }, [status]);
 
   // Reset per-route query state when leaving the app (logout) — handled by store.
   useEffect(() => {

@@ -53,7 +53,7 @@ export function route(handler: Handler<never>) {
       // Capture the (optional) forwarded Supabase identity for this request so
       // server helpers (e.g. realtime fan-out) can act under RLS as the user.
       return await runWithRequestContext(
-        { authorization: req.headers.get("authorization") },
+        { authorization: req.headers.get("authorization"), origin: req.nextUrl.origin },
         () => handler({ req, user, params }),
       );
     } catch (err) {

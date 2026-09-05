@@ -6,6 +6,7 @@ import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import {
   Bell,
+  BellRing,
   Loader2,
   Lock,
   LogOut,
@@ -14,6 +15,12 @@ import {
   UserRound,
 } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
+import {
+  initOneSignal,
+  isPushConfigured,
+  pushPermission,
+  requestPushPermission,
+} from "@/lib/onesignal";
 import { cn } from "@/lib/utils";
 import { navigateTo } from "@/lib/router";
 import { useSession } from "@/lib/session-store";
@@ -429,6 +436,9 @@ export default function SettingsView() {
         </div>
       </SectionCard>
 
+      {/* ── 3b. Browser push (OneSignal, optional) ── */}
+      <PushSection />
+
       {/* ── 4. Appearance ── */}
       <SectionCard
         icon={<Palette className="h-4.5 w-4.5" aria-hidden="true" />}
@@ -451,6 +461,68 @@ export default function SettingsView() {
         <EditProfileDialog open={editOpen} onClose={() => setEditOpen(false)} profile={user.profile} />
       )}
     </div>
+  );
+}
+
+// ─── Browser push (OneSignal) ────────────────────────────────────────────────
+
+function PushSection() {
+  const [permission, setPermission] = useState<NotificationPermission | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [inited, setInited] = useState(false);
+
+  useEffect(() => {
+    if (!isPushConfigured()) return; // OneSignal not configured — hide the card
+    void initOneSignal().then((ready) => {
+      if (ready) {
+        setInited(true);
+        setPermission(pushPermission());
+      }
+    });
+  }, []);
+
+  if (!isPushConfigured() || !inited) return null;
+
+  const request = async () => {
+    setBusy(true);
+    try {
+      const result = await requestPushPermission();
+      setPermission(result);
+      if (result === "granted") {
+        toast.success("Browser push notifications enabled.");
+      } else if (result === "denied") {
+        toast.error("Push is blocked in your browser settings — unblock KIVO there to enable it.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const statusText =
+    permission === "granted"
+      ? "Push notifications are enabled for this browser."
+      : permission === "denied"
+        ? "Push is currently blocked in your browser settings."
+        : "Enable browser push to get KIVO notifications even when the tab is closed.";
+
+  return (
+    <SectionCard
+      icon={<BellRing className="h-4.5 w-4.5" aria-hidden="true" />}
+      title="Browser push"
+      description="KIVO notifications outside the app, delivered by OneSignal."
+    >
+      <div className="flex min-h-10 flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+        <p className="text-[13px] text-muted-foreground">{statusText}</p>
+        {permission === "granted" ? (
+          <span className="shrink-0 text-[13px] font-semibold text-brand">Enabled</span>
+        ) : (
+          <Button size="sm" className="shrink-0 rounded-full" onClick={() => void request()} disabled={busy}>
+            {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+            {permission === "denied" ? "Try again" : "Enable push"}
+          </Button>
+        )}
+      </div>
+    </SectionCard>
   );
 }
 

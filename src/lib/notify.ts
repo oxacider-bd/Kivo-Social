@@ -114,6 +114,86 @@ async function fanOutToSupabaseRealtime(
   }
 }
 
+// ─── OneSignal Web Push (optional delivery layer) ───────────────────────────
+// OneSignal is ONLY a push-delivery transport: Supabase public.notifications
+// stays the source of truth. The push targets the recipient's OneSignal
+// identity (external_id = their Supabase user UUID, set by the client via
+// OneSignal.login). Failures are logged and never affect the social action.
+// The REST key is server-only — never exposed to the client bundle.
+
+const ONESIGNAL_REST_KEY = (process.env.ONESIGNAL_REST_API_KEY ?? "").trim();
+const ONESIGNAL_APP_ID = (process.env.NEXT_PUBLIC_ONESIGNAL_APP_ID ?? "").trim();
+const APP_ORIGIN_FALLBACK = "https://kivo-rho-pearl.vercel.app";
+
+const PUSH_COPY: Record<NotificationType, string> = {
+  reaction: "reacted to your post",
+  comment: "commented on your post",
+  reply: "replied to your comment",
+  follow: "started following you",
+  follow_accept: "accepted your follow request",
+  follow_request: "requested to follow you",
+  mention: "mentioned you in a post",
+  space_post: "posted in a space you're in",
+};
+
+/** Deep link for the push click — production origin, never localhost. */
+function pushDestination(
+  type: NotificationType,
+  postId: string | null,
+  actorUsername: string | null,
+): string {
+  const origin = getRequestOrigin() ?? APP_ORIGIN_FALLBACK;
+  if (postId) return `${origin}/?openPost=${encodeURIComponent(postId)}`;
+  if (type === "follow" || type === "follow_accept" || type === "follow_request") {
+    if (actorUsername) return `${origin}/#/profile/${actorUsername}`;
+  }
+  return `${origin}/#/notifications`;
+}
+
+/**
+ * Sends the Web Push for a freshly created notification row. Never throws —
+ * OneSignal being unavailable must not affect the social action in any way.
+ */
+async function pushToOnesignal(input: {
+  recipientSupabaseId: string;
+  notificationId: string;
+  type: NotificationType;
+  title: string;
+  body: string | null;
+  url: string;
+}): Promise<void> {
+  if (!ONESIGNAL_REST_KEY || !ONESIGNAL_APP_ID) return; // not configured — graceful no-op
+  try {
+    const res = await fetch("https://api.onesignal.com/notifications", {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${ONESIGNAL_REST_KEY}`,
+        "content-type": "application/json",
+        // Idempotent per durable notification row — retries/replays never
+        // produce duplicate pushes for the same social action.
+        "idempotency-key": input.notificationId,
+      },
+      body: JSON.stringify({
+        app_id: ONESIGNAL_APP_ID,
+        include_aliases: { external_id: [input.recipientSupabaseId] },
+        target_channel: "push",
+        headings: { en: input.title },
+        contents: { en: input.body || input.title },
+        url: input.url,
+      }),
+      signal: AbortSignal.timeout(4_000),
+    });
+    if (!res.ok) {
+      console.warn(`[notify] OneSignal push HTTP ${res.status} (recipient notified in-app regardless)`);
+    }
+  } catch (err) {
+    console.warn(
+      "[notify] OneSignal push failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
 export interface NotifyInput {
   userId: string; // recipient
   actorId: string; // who caused it
@@ -231,6 +311,23 @@ export async function notify(input: NotifyInput) {
     const message = notification.preview ?? notification.postPreview ?? null;
     if (recipient.supabaseId) {
       void fanOutToSupabaseRealtime(recipient.supabaseId, input, message, notification.id);
+
+      // OneSignal browser push — same durable row, optional delivery layer.
+      const actorName =
+        actorProfile?.fullName?.trim() ||
+        actorProfile?.username ||
+        notification.actor?.email?.split("@")[0] ||
+        "Someone";
+      const title = `${actorName} ${PUSH_COPY[input.type] ?? "sent you a notification"}`;
+      const actorUsername = actorProfile?.username ?? null;
+      void pushToOnesignal({
+        recipientSupabaseId: recipient.supabaseId,
+        notificationId: notification.id,
+        type: input.type,
+        title,
+        body: message,
+        url: pushDestination(input.type, notification.postId, actorUsername),
+      });
     }
   } catch (err) {
     console.error("[notify] failed:", err);

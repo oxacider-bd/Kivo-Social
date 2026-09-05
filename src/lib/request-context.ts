@@ -12,6 +12,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export interface RequestContext {
   /** Raw `Authorization` header value ("Bearer <supabase-access-token>") or null. */
   authorization: string | null;
+  /** Request origin (e.g. "https://kivo-rho-pearl.vercel.app") for push deep links. */
+  origin: string | null;
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();
@@ -24,4 +26,9 @@ export function runWithRequestContext<T>(context: RequestContext, fn: () => Prom
 /** The acting user's Authorization header for the current request, if any. */
 export function getRequestAuthorization(): string | null {
   return storage.getStore()?.authorization ?? null;
+}
+
+/** The current request's origin (for push deep links), if available. */
+export function getRequestOrigin(): string | null {
+  return storage.getStore()?.origin ?? null;
 }
