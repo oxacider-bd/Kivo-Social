@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { ZodError, ZodSchema } from "zod";
 import { getSessionUser, type AuthedUser } from "@/lib/auth";
 import { runWithRequestContext } from "@/lib/request-context";
-
 // ─── Response envelope ───────────────────────────────────────────────────────
 
 export function ok<T>(data: T, init?: ResponseInit) {
@@ -71,6 +70,27 @@ export function errorResponse(err: unknown) {
   if (err instanceof ZodError) {
     const first = err.issues[0];
     return fail("VALIDATION", first?.message ?? FRIENDLY_MESSAGES.VALIDATION, 422);
+  }
+  // Database-layer failures surface their SAFE error class (Prisma P-code +
+  // scrubbed detail) so production outages are diagnosable — credentials and
+  // stack traces are never included.
+  const prismaCode = (err as { code?: unknown })?.code;
+  if (typeof prismaCode === "string" && /^P\d{4,5}$/.test(prismaCode)) {
+    console.error("[api] database error:", err);
+    const detail = String((err as { message?: unknown }).message ?? "")
+      .split("\n")
+      .slice(0, 3)
+      .join(" ")
+      .replace(/:\/\/[^@\s]+@/g, "://***@")
+      .slice(0, 240);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: { code: "INTERNAL", message: FRIENDLY_MESSAGES.INTERNAL },
+        diag: { prismaCode, detail },
+      },
+      { status: 500 },
+    );
   }
   console.error("[api] unhandled error:", err);
   return fail("INTERNAL", undefined, 500);
