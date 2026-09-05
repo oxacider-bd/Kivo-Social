@@ -4,6 +4,31 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
 }
 
+/**
+ * Ensures the connection URL is PgBouncer-safe. Prisma uses named prepared
+ * statements unless `pgbouncer=true` is set — through Supabase's transaction
+ * pooler (port 6543) those collide across server connections and fail with
+ * 42P05 "prepared statement \"s0\" already exists". The flag is applied
+ * programmatically so a Vercel env string missing it cannot break the data
+ * layer. Non-pooler URLs (local SQLite, direct connections) pass through.
+ */
+function resolveDatabaseUrl(raw: string): string {
+  if (!raw.startsWith('postgres://') && !raw.startsWith('postgresql://')) return raw
+  try {
+    const u = new URL(raw)
+    const isTransactionPooler =
+      u.hostname.endsWith('.pooler.supabase.com') && u.port === '6543'
+    if (!isTransactionPooler || u.searchParams.get('pgbouncer') === 'true') return raw
+    u.searchParams.set('pgbouncer', 'true')
+    if (!u.searchParams.has('connection_limit')) u.searchParams.set('connection_limit', '1')
+    return u.toString()
+  } catch {
+    return raw
+  }
+}
+
+const resolvedUrl = resolveDatabaseUrl((process.env.DATABASE_URL ?? '').trim())
+
 // Query logging is a dev aid — production logs stay quiet.
 //
 // IMPORTANT: the client is cached in EVERY environment (including production).
@@ -15,24 +40,34 @@ const globalForPrisma = globalThis as unknown as {
 export const db =
   globalForPrisma.prisma ??
   new PrismaClient({
+    datasourceUrl: resolvedUrl || undefined,
     log: process.env.NODE_ENV === 'production' ? ['error'] : ['error', 'query'],
   })
 
 globalForPrisma.prisma = db
 
 /**
- * Safe datasource description for diagnostics — derived from DATABASE_URL with
- * credentials stripped. Never contains passwords or full connection strings.
+ * Safe datasource description for diagnostics — derived from the RESOLVED
+ * DATABASE_URL with credentials stripped. Never contains passwords or full
+ * connection strings.
  */
 export function describeDatasource() {
-  const raw = (process.env.DATABASE_URL ?? '').trim()
+  const raw = resolvedUrl
   const info: {
     envPresent: boolean
     kind: 'postgres' | 'sqlite' | 'unknown'
     host: string | null
     database: string | null
     schema: string | null
-  } = { envPresent: raw.length > 0, kind: 'unknown', host: null, database: null, schema: null }
+    pgbouncer: boolean
+  } = {
+    envPresent: raw.length > 0,
+    kind: 'unknown',
+    host: null,
+    database: null,
+    schema: null,
+    pgbouncer: false,
+  }
 
   if (raw.startsWith('postgres://') || raw.startsWith('postgresql://')) {
     info.kind = 'postgres'
@@ -41,6 +76,7 @@ export function describeDatasource() {
       info.host = u.host
       info.database = u.pathname.replace(/^\//, '') || null
       info.schema = u.searchParams.get('schema')
+      info.pgbouncer = u.searchParams.get('pgbouncer') === 'true'
     } catch {
       /* unparsable — reported as-is by the health check */
     }
