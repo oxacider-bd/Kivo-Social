@@ -75,7 +75,12 @@ export function errorResponse(err: unknown) {
   // scrubbed detail) so production outages are diagnosable — credentials and
   // stack traces are never included.
   const prismaCode = (err as { code?: unknown })?.code;
-  if (typeof prismaCode === "string" && /^P\d{4,5}$/.test(prismaCode)) {
+  const prismaName = (err as { name?: unknown })?.name;
+  const isPrisma =
+    (typeof prismaCode === "string" && /^P\d{4,5}$/.test(prismaCode)) ||
+    prismaName === "PrismaClientInitializationError" ||
+    prismaName === "PrismaClientKnownRequestError";
+  if (isPrisma) {
     console.error("[api] database error:", err);
     const detail = String((err as { message?: unknown }).message ?? "")
       .split("\n")
@@ -87,7 +92,7 @@ export function errorResponse(err: unknown) {
       {
         ok: false,
         error: { code: "INTERNAL", message: FRIENDLY_MESSAGES.INTERNAL },
-        diag: { prismaCode, detail },
+        diag: { prismaCode: typeof prismaCode === "string" ? prismaCode : prismaName ?? "PRISMA_ERROR", detail },
       },
       { status: 500 },
     );
