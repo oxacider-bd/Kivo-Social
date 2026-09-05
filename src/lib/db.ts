@@ -52,11 +52,19 @@ export function describeDatasource() {
 
 /** Scrubs credentials out of a Prisma error message before surfacing it. */
 export function scrubDbError(err: unknown): { code: string | null; detail: string | null } {
-  const e = err as { code?: unknown; message?: unknown }
+  const e = err as { code?: unknown; message?: unknown; name?: unknown }
   const code = typeof e?.code === 'string' ? e.code : null
-  const detail =
-    typeof e?.message === 'string'
-      ? e.message.split('\n').slice(0, 3).join(' ').replace(/:\/\/[^@\s]+@/g, '://***@').slice(0, 240)
-      : null
+  const raw = typeof e?.message === 'string' && e.message.length > 0 ? e.message : String(err)
+  const detail = raw
+    .replace(/:\/\/[^@\s]+@/g, '://***@')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .filter((l) => !/^(at |node_modules|prisma:)/i.test(l))
+    .slice(0, 6)
+    .join(' | ')
+    .slice(0, 500)
+  const name = typeof e?.name === 'string' ? e.name : null
+  return { code: code ?? name, detail }
   return { code, detail }
 }
