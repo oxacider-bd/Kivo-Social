@@ -5,7 +5,7 @@ import {
   getSupabaseEnv,
   isSupabaseConfigured,
 } from "@/lib/supabase";
-import { getRequestAuthorization } from "@/lib/request-context";
+import { getRequestAuthorization, getRequestOrigin } from "@/lib/request-context";
 import type { NotificationDTO, NotificationType, ProfileCardDTO } from "@/types";
 
 const INTERNAL_SECRET = process.env.INTERNAL_SECRET ?? "kivo-internal-dev-secret";
