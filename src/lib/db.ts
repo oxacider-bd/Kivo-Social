@@ -5,13 +5,20 @@ const globalForPrisma = globalThis as unknown as {
 }
 
 // Query logging is a dev aid — production logs stay quiet.
+//
+// IMPORTANT: the client is cached in EVERY environment (including production).
+// Creating a new PrismaClient per request opens a fresh connection pool per
+// request; on serverless (Vercel) instances are frozen without $disconnect(),
+// so those connections leak on the transaction pooler until it starts
+// refusing clients — every database route then fails instantly. One client
+// per instance keeps the connection count bounded (instances × connection_limit).
 export const db =
   globalForPrisma.prisma ??
   new PrismaClient({
     log: process.env.NODE_ENV === 'production' ? ['error'] : ['error', 'query'],
   })
 
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = db
+globalForPrisma.prisma = db
 
 /**
  * Safe datasource description for diagnostics — derived from DATABASE_URL with
