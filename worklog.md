@@ -500,3 +500,14 @@ Work Log:
 - .env.example: NEXT_PUBLIC_ONESIGNAL_APP_ID= / ONESIGNAL_REST_API_KEY= (names only). Local .env: App ID set; REST key intentionally empty (user sets it on Vercel).
 - Security audit: deployed client bundle scanned - App ID present (public by design), NO REST key name or value in any chunk; RLS untouched; no tokens/OTPs/passwords logged anywhere.
 - Remaining (user-side): set ONESIGNAL_REST_API_KEY on Vercel (server-only secret); the browser subscription + real push delivery steps need a human browser session (permission grant) - harness and code are ready and the service worker + SDK + identity plumbing are verified live.
+
+---
+Task ID: 13-mobile-otp-perf (Agent: Cline)
+Task: (1) mobile auth responsiveness, (2) broken email-OTP flow, (3) slow initial load.
+
+Work Log:
+- OTP trace (live, disposable mailbox, 30 signup retries over ~30 min): EVERY signup returns HTTP 500 unexpected_failure / hasUser=false - the Supabase built-in SMTP quota is saturated, so the confirmation email (and the user row) cannot be created. This is the exact server-side cause of "the OTP email is not arriving". Template config IS OTP-compatible ({{ .Token }} - a real user received OTPs earlier). Fix is dashboard-side: custom SMTP (Auth > SMTP) or waiting for the quota window; no bypass attempted.
+- Flow hardening (deployed): signup confirmation-required now signs out any stale authenticated session BEFORE navigating to #/verify-email - previously the auth-route bounce ("auth routes while signed in -> go home") could pull users off the OTP screen when an old session was still active (the reported "OTP UI does not appear"). Login with an unconfirmed email now navigates STRAIGHT to the OTP screen instead of a dead-end warning. Removed the insecure signup_password sessionStorage write (write-only dead code, plaintext password in storage).
+- Mobile auth layout: safe-area insets (env(safe-area-inset-top/bottom)) on the auth top bar + footer; form container switched from justify-center (which clips tall forms upward) to my-auto centering that collapses to top-aligned when the form exceeds the viewport; min-w-0 on the form panel; responsive paddings. Verified deployed CSS contains safe-area-inset-top/bottom + dvh utilities.
+- Splash performance: full 2s cinematic now plays ONCE per browser session (kivo:splash-seen flag); repeat loads get a compact ~450ms brand flash (no ember canvas, no long letter choreography) - the largest perceived-load item (previously ~2.7s on EVERY load). OneSignal init was already async/non-blocking.
+- Verification: tsc 0, eslint 0, build 0; deployed CSS contains the new utilities; landing 200 in 0.51s; login/db-health/feed 200; service worker 200.
