@@ -21,23 +21,22 @@ import {
 export default function SignupView() {
   const [fullName, setFullName] = useState("");
   const [username, setUsername] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
   // Prefill when arriving via "Change email" on the verification screen.
-  useEffect(() => {
+  const [email, setEmail] = useState(() => {
     try {
       const prefill = window.sessionStorage.getItem(SIGNUP_PREFILL_EMAIL_KEY);
       if (prefill) {
-        setEmail(prefill);
         window.sessionStorage.removeItem(SIGNUP_PREFILL_EMAIL_KEY);
+        return prefill;
       }
     } catch {
       /* ignore */
     }
-  }, []);
+    return "";
+  });
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Live mirror of Supabase's actual password policy (hint layer only —
   // Supabase Auth re-validates and remains the final authority on submit).
