@@ -435,3 +435,9 @@ Resumption (same task, continued):
 - Gotcha found: a leaked process-level DATABASE_URL (from a timed-out diagnostic loop in the shared shell) silently overrode .env for one seed run — always set DATABASE_URL explicitly when scripting against this project.
 - Remaining for the user: set the same pooler URLs + Supabase public env vars on Vercel → redeploy latest main (current deployment is stale, predates 88c4d6c). Then the OTP success path works end-to-end on https://kivo-rho-pearl.vercel.app.
 
+Production verification (post-deploy of de645a1 + eb9b826):
+- The user completed the Vercel env configuration (an invalid VITE_SUPABASE_* value briefly poisoned server-side env resolution — eb9b826 hardened getSupabaseEnv to skip invalid candidates and fall through to the hardcoded constants, matching the browser client).
+- LIVE production probes, all passing: /api/supabase/health → 200 configured:true ping ok; /api/auth/bridge (fake token) → 401 token-invalid (real server-side Supabase verification runs); /api/auth/demo → 200 + httpOnly cookie (one transient cold-start 500 on first hit, then consistently 200); /api/auth/login maya/KivoDemo1! → 200; wrong creds → 401; logout → 200. The production database is reachable through the pooler and the mirror/session system works.
+- Git: main pushed with de645a1 + eb9b826; working tree clean.
+- The only acceptance step not executable here remains the real-browser OTP success path (requires the user's inbox); every server-side link of that chain is verified live in production.
+
