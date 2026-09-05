@@ -82,7 +82,20 @@ export default function HomeView() {
             title="Your feed couldn't load"
             description="Give it another moment and try again."
             action={
-              <Button variant="outline" className="rounded-full" onClick={() => void feed.refetch()}>
+              <Button
+                variant="outline"
+                className="rounded-full"
+                onClick={() =>
+                  void (async () => {
+                    // While degraded, the app cookie is missing — re-run the
+                    // bridge once (single request) before refetching the feed.
+                    if (useSession.getState().bridgeDegraded) {
+                      await useSession.getState().resyncBridge();
+                    }
+                    await feed.refetch();
+                  })()
+                }
+              >
                 Try again
               </Button>
             }
@@ -91,7 +104,7 @@ export default function HomeView() {
           <EmptyState
             icon={<Sparkles className="h-8 w-8" />}
             title="Your feed is quiet."
-            description="Follow some people to fill it up."
+            description="Follow people or create your first post to get started."
             action={
               <Button className="rounded-full" onClick={() => navigateTo("/explore")}>
                 <Compass className="h-4 w-4" aria-hidden="true" />

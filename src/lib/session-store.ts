@@ -62,6 +62,12 @@ interface SessionState {
   finishEmailVerification: (
     accessToken: string
   ) => Promise<{ ok: true } | { ok: false; message: string }>;
+  /**
+   * Re-run the bridge for the current Supabase session (force — bypasses the
+   * hydration dedupe). Used by retry actions when the app cookie is missing
+   * after a degraded session; single request, never a loop.
+   */
+  resyncBridge: () => Promise<boolean>;
 }
 
 // ─── module-level dedupe guards (avoid duplicate requests) ───────────────────
@@ -121,9 +127,22 @@ async function hydrateFromSupabase(
   const promise = (async () => {
     let dto: SessionUser | null = null;
     let degraded = false;
+    let activeSession = session;
 
     try {
-      dto = await bridgeSession(session.access_token);
+      // A stored access token can expire between fetches (the supabase-js
+      // getSession() race after an idle tab) — refresh ONCE and retry the
+      // bridge a single time before degrading. At most one extra request,
+      // never a loop.
+      try {
+        dto = await bridgeSession(session.access_token);
+      } catch (firstErr) {
+        const { data } = await getSupabaseBrowserClient().auth.refreshSession();
+        const fresh = data.session;
+        if (!fresh?.access_token || fresh.access_token === session.access_token) throw firstErr;
+        activeSession = fresh;
+        dto = await bridgeSession(fresh.access_token);
+      }
     } catch (err) {
       if (opts.requireBridge) throw err;
       degraded = true;
@@ -167,7 +186,7 @@ async function hydrateFromSupabase(
     }
 
     lastHydratedAuthId = authId;
-    setCurrentSupabaseAccessToken(session.access_token);
+    setCurrentSupabaseAccessToken(activeSession.access_token);
     useSession.setState({
       user: dto,
       status: "authenticated",
@@ -361,6 +380,19 @@ export const useSession = create<SessionState>((set) => ({
             ? err.message
             : "We couldn't finish signing you in. Please try again.";
       return { ok: false, message };
+    }
+  },
+
+  resyncBridge: async () => {
+    if (typeof window === "undefined") return false;
+    const { data } = await getSupabaseBrowserClient().auth.getSession();
+    const session = data.session;
+    if (!session?.user) return false;
+    try {
+      await hydrateFromSupabase(session, { force: true });
+      return true;
+    } catch {
+      return false;
     }
   },
 }));
