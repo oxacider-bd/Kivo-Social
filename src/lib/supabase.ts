@@ -35,24 +35,49 @@ export function getSupabaseEnv(): SupabaseEnv | null {
   if (envChecked) return cachedEnv;
   envChecked = true;
 
-  const rawUrl = (
-    process.env.VITE_SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL
-  )?.trim();
-  const publishableKey = (
-    process.env.VITE_SUPABASE_PUBLISHABLE_KEY ??
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-  )?.trim();
-
   // Hardcoded fallback — guarantees the client ALWAYS works in the browser
   // even if env vars are not embedded at build time.
-  const url = rawUrl || "https://ulhubxawckcrfsyrrqqp.supabase.co";
-  const key = publishableKey || "sb_publishable_yhOKegAXOI4JR_vW87OpFg_St86-zlo";
+  const FALLBACK_URL = "https://ulhubxawckcrfsyrrqqp.supabase.co";
+  const FALLBACK_KEY = "sb_publishable_yhOKegAXOI4JR_vW87OpFg_St86-zlo";
+
+  // Try each candidate in precedence order; the first VALID https URL wins.
+  // A single invalid value (e.g. a database URL pasted into the wrong var on
+  // Vercel) must not poison the whole server — fall through to the next
+  // candidate and finally to the hardcoded constants, mirroring the browser
+  // client's resilience.
+  const urlCandidates = [
+    process.env.VITE_SUPABASE_URL,
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    FALLBACK_URL,
+  ].map((v) => v?.trim()).filter((v): v is string => Boolean(v));
+
+  let url = FALLBACK_URL;
+  for (const candidate of urlCandidates) {
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol === "https:") {
+        url = candidate;
+        break;
+      }
+      console.warn("[supabase] Ignoring non-https Supabase URL candidate.");
+    } catch {
+      console.warn("[supabase] Ignoring unparseable Supabase URL candidate.");
+    }
+  }
+
+  const key =
+    (
+      [process.env.VITE_SUPABASE_PUBLISHABLE_KEY, process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY]
+        .map((v) => v?.trim())
+        .filter((v): v is string => Boolean(v))[0] ?? FALLBACK_KEY
+    );
 
   // Validate URL format
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
+    // Unreachable while the hardcoded fallback is valid — kept for safety.
     console.warn("[supabase] Invalid Supabase URL, returning null:", url);
     return null;
   }
