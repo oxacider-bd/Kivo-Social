@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { navigateTo } from "@/lib/router";
 import { verifyEmailOtp, resendSignupOtp } from "@/services/auth";
@@ -12,26 +12,32 @@ import {
 import { AuthLayout } from "@/features/auth/components/auth-layout";
 import { OtpInput } from "@/features/auth/components/otp-input";
 import { Button } from "@/components/ui/button";
+import { useSession } from "@/lib/session-store";
+import { getSupabaseBrowserClient } from "@/lib/supabase";
 import { Check, Loader2, MailCheck } from "lucide-react";
 import { toast } from "sonner";
-import { getSupabaseBrowserClient } from "@/lib/supabase";
-import { api } from "@/lib/api";
-import type { SessionUser } from "@/types";
 
 /**
  * "Verify your email" — the dedicated screen for signup email confirmation.
  *
- * RULE: If verifyOtp() succeeds (no error thrown), it is absolute success.
- * We immediately redirect to / and let the home layout handle session bridging.
- * The user NEVER sees an error banner after a successful OTP code.
+ * Flow (no login page in between):
+ *   verifyOtp() → setSession() → getSession() confirmation →
+ *   AWAIT the KIVO bridge (finishEmailVerification) → app state refreshed →
+ *   navigate home. The redirect NEVER happens before the app session is ready.
+ *
+ * If verification succeeds but the bridge fails, the user STAYS on this
+ * screen with their valid Supabase session and a retry action — never
+ * bounced to login, never logged out.
  */
 
 const OTP_LENGTH = 6;
 const RESEND_COOLDOWN_SECONDS = 60;
 
 export default function VerifyEmailView() {
-  const pending = useRef(getPendingVerification());
-  const email = pending.current?.email ?? "";
+  // One-time snapshot of the pending verification hand-off (never the OTP,
+  // never the password). useState initializer keeps this render-safe.
+  const [pending] = useState(() => getPendingVerification());
+  const email = pending?.email ?? "";
 
   const [code, setCode] = useState("");
   const [verifying, setVerifying] = useState(false);
@@ -39,11 +45,15 @@ export default function VerifyEmailView() {
   const [error, setError] = useState<string | null>(null);
   const [errorNonce, setErrorNonce] = useState(0);
   const [status, setStatus] = useState<string | null>(null);
+  /** Set when the email IS verified but the app bridge couldn't finish sign-in. */
+  const [bridgeError, setBridgeError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const [continuing, setContinuing] = useState(false);
 
   const [resending, setResending] = useState(false);
   const [resendIn, setResendIn] = useState(() => {
-    const elapsed = pending.current
-      ? Math.floor((Date.now() - pending.current.at) / 1000)
+    const elapsed = pending
+      ? Math.floor((Date.now() - pending.at) / 1000)
       : RESEND_COOLDOWN_SECONDS;
     return Math.max(0, RESEND_COOLDOWN_SECONDS - elapsed);
   });
@@ -58,6 +68,11 @@ export default function VerifyEmailView() {
     return () => clearTimeout(t);
   }, [resendIn]);
 
+  // Safety net: never leave the auth listener suppressed after leaving this screen.
+  useEffect(() => {
+    return () => useSession.getState().endEmailVerification();
+  }, []);
+
   async function onVerify(e: FormEvent) {
     e.preventDefault();
     if (verifying || verified) return;
@@ -68,47 +83,125 @@ export default function VerifyEmailView() {
       return;
     }
     setError(null);
+    setBridgeError(null);
     setStatus(null);
     setVerifying(true);
+
+    const sessionStore = useSession.getState();
+    // Take over hydration BEFORE verifyOtp() — the SIGNED_IN event it emits
+    // must not race the explicit, awaited bridge sequence below.
+    sessionStore.beginEmailVerification();
 
     try {
       // verifyOtp throws on failure — if it returns, verification SUCCEEDED.
       const { session } = await verifyEmailOtp(email, code);
 
-      // Mark verified — no error banner from this point forward.
+      // Mark verified — no error banner for the OTP itself from here on.
       setVerified(true);
       clearPendingVerification();
-      setStatus("Email verified! Taking you to KIVO…");
+      setStatus("Email verified! Finishing sign-in…");
 
-      // Persist session in SDK storage + bridge user — must complete before redirect.
-      if (session?.access_token) {
+      // 1) Persist the verified session in the SDK storage, then CONFIRM it.
+      const supabase = getSupabaseBrowserClient();
+      if (session?.access_token && session?.refresh_token) {
         try {
-          const supabase = getSupabaseBrowserClient();
           await supabase.auth.setSession({
             access_token: session.access_token,
             refresh_token: session.refresh_token,
           });
         } catch {
-          // setSession failure is non-fatal — home layout will retry via refresh()
+          /* re-confirmed via getSession() below */
         }
+      }
+      const { data: confirmed } = await supabase.auth.getSession();
+      const accessToken = confirmed.session?.access_token ?? null;
 
-        // Best-effort bridge — don't block on failure
-        api<SessionUser>("/api/auth/bridge", {
-          body: { accessToken: session.access_token },
-        }).then((user) => {
-          toast(`Welcome to KIVO, ${user.profile.fullName.split(" ")[0]}!`);
-        }).catch(() => {});
+      if (process.env.NODE_ENV !== "production") {
+        // Safe diagnostics — ids/booleans/pathname only, never tokens.
+        console.info("[kivo-auth:dev] OTP verified", {
+          pathname: `${window.location.pathname}${window.location.hash}`,
+          hasUser: Boolean(confirmed.session?.user),
+          sessionPersisted: Boolean(confirmed.session),
+        });
       }
 
-      // ABSOLUTE SUCCESS — hard navigate. Home layout handles lazy bridging.
-      window.location.href = "/";
+      if (!accessToken) {
+        // verifyOtp succeeded but no session could be stored — stay here.
+        setBridgeError(
+          "Your verified session could not be stored in this browser. Please try again."
+        );
+        return;
+      }
+
+      // 2) AWAIT the KIVO bridge + hydration — no redirect until the app
+      //    session is ready. On failure the Supabase session stays intact.
+      const result = await sessionStore.finishEmailVerification(accessToken);
+      if (!result.ok) {
+        setBridgeError(result.message);
+        return;
+      }
+
+      // 3) Fully signed in — SPA navigation (the session persists in storage).
+      const user = useSession.getState().user;
+      toast(`Welcome to KIVO, ${user?.profile.fullName.split(" ")[0] ?? "friend"}!`);
+      navigateTo("/", { replace: true });
     } catch (err) {
       // Only verifyOtp failures land here — actual OTP errors.
       setVerified(false);
       setError(err instanceof Error ? err.message : "Invalid or expired code. Please try again.");
       setErrorNonce((n) => n + 1);
     } finally {
+      sessionStore.endEmailVerification();
       setVerifying(false);
+    }
+  }
+
+  /** Retry only the bridge/hydration step — the Supabase session is intact. */
+  async function onRetrySync() {
+    if (retrying) return;
+    setRetrying(true);
+    setBridgeError(null);
+    const sessionStore = useSession.getState();
+    sessionStore.beginEmailVerification();
+    try {
+      const supabase = getSupabaseBrowserClient();
+      const { data } = await supabase.auth.getSession();
+      const accessToken = data.session?.access_token ?? null;
+      if (!accessToken) {
+        setBridgeError("Your session has expired — please request a new code.");
+        return;
+      }
+      const result = await sessionStore.finishEmailVerification(accessToken);
+      if (!result.ok) {
+        setBridgeError(result.message);
+        return;
+      }
+      const user = useSession.getState().user;
+      toast(`Welcome to KIVO, ${user?.profile.fullName.split(" ")[0] ?? "friend"}!`);
+      navigateTo("/", { replace: true });
+    } finally {
+      sessionStore.endEmailVerification();
+      setRetrying(false);
+    }
+  }
+
+  /**
+   * Continue with the Supabase session only (degraded mode) — for when the
+   * app backend is temporarily unreachable. The store keeps retrying the
+   * bridge in the background and the user is never bounced to login.
+   */
+  async function onContinueAnyway() {
+    if (continuing) return;
+    setContinuing(true);
+    try {
+      const user = await useSession.getState().refresh();
+      if (user) {
+        navigateTo("/", { replace: true });
+      } else {
+        setBridgeError("KIVO's servers are unreachable right now. Please try again shortly.");
+      }
+    } finally {
+      setContinuing(false);
     }
   }
 
@@ -164,7 +257,11 @@ export default function VerifyEmailView() {
 
         <p className="mt-2 text-sm text-muted-foreground">
           {verified ? (
-            "Everything checks out — taking you into KIVO…"
+            bridgeError ? (
+              "Your email is confirmed — one more step to bring you in."
+            ) : (
+              "Everything checks out — taking you into KIVO…"
+            )
           ) : (
             <>
               We sent a 6-digit verification code to{" "}
@@ -173,7 +270,33 @@ export default function VerifyEmailView() {
           )}
         </p>
 
-        {verified ? (
+        {verified && bridgeError ? (
+          <div className="mt-8 space-y-3" role="alert" aria-live="polite">
+            <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              Email verified, but we couldn&apos;t finish signing you in. Please try again.
+            </p>
+            <p className="text-xs text-muted-foreground">{bridgeError}</p>
+            <Button
+              type="button"
+              onClick={onRetrySync}
+              disabled={retrying}
+              className="h-11 w-full text-[15px] font-semibold"
+            >
+              {retrying && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+              {retrying ? "Trying again…" : "Try again"}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={onContinueAnyway}
+              disabled={continuing}
+              className="h-9 w-full text-sm font-semibold text-muted-foreground"
+            >
+              {continuing && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+              Continue to KIVO anyway
+            </Button>
+          </div>
+        ) : verified ? (
           <div
             className="mt-8 flex flex-col items-center gap-3"
             role="status"

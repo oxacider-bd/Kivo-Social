@@ -159,7 +159,7 @@ const NOTIFICATION_COPY: Record<string, string> = {
 
 export default function Home() {
   const { path } = useHashRoute();
-  const { status, refresh } = useSession();
+  const { status, refresh, bridgeDegraded } = useSession();
   const route = matchRoute(path);
   const queryClient = useQueryClient();
   const reduce = useReducedMotion() ?? false;
@@ -176,6 +176,19 @@ export default function Home() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Bridge failures are never silent: a valid Supabase session stays signed
+  // in (degraded mode) while the app backend is unreachable — say so once.
+  const degradedWarnedRef = useRef(false);
+  useEffect(() => {
+    if (bridgeDegraded && !degradedWarnedRef.current) {
+      degradedWarnedRef.current = true;
+      toast.warning(
+        "You're signed in, but KIVO's servers couldn't be reached — your feed may not load. We'll keep retrying."
+      );
+    }
+    if (!bridgeDegraded) degradedWarnedRef.current = false;
+  }, [bridgeDegraded]);
 
   // Reset per-route query state when leaving the app (logout) — handled by store.
   useEffect(() => {

@@ -11,10 +11,14 @@ export const POST = route(async ({ req }: { req: NextRequest }) => {
   if (!rateLimit(`supabase-bridge:${clientIp(req)}`, 20, 60_000)) return fail("RATE_LIMITED");
   const body = await parseBody(req, z.object({ accessToken: z.string().min(10) }));
 
-  // If Supabase is not configured, skip the bridge and return 401
-  // so the client falls back to legacy session.
+  // If Supabase is not configured on the server, this is an outage — not a
+  // bad token. Surface 503 so clients show "try again", never "sign in again".
   if (!isSupabaseConfigured()) {
-    return fail("UNAUTHORIZED", "Supabase not configured. Please sign in again.", 401);
+    return fail(
+      "SUPABASE_UNAVAILABLE",
+      "Sign-in is temporarily unavailable. Please try again in a moment.",
+      503
+    );
   }
 
   // 1) Supabase itself validates the access token — the client-supplied
@@ -32,11 +36,28 @@ export const POST = route(async ({ req }: { req: NextRequest }) => {
     supabaseUser = data.user;
     email = supabaseUser?.email?.toLowerCase() ?? null;
     if (error || !supabaseUser || !email) {
+      // Distinguish "Supabase unreachable" from "token invalid" so transient
+      // outages don't tell already-verified users to sign in again.
+      const transient =
+        (error as { status?: number } | null)?.status === 0 ||
+        /fetch|network|timeout|unavailable/i.test(error?.message ?? "");
+      if (transient) {
+        console.error("[bridge] Supabase verification unavailable:", error);
+        return fail(
+          "SUPABASE_UNAVAILABLE",
+          "We couldn't verify your session right now. Please try again.",
+          503
+        );
+      }
       return fail("UNAUTHORIZED", "Your session could not be verified. Please sign in again.", 401);
     }
   } catch (err) {
     console.error("[bridge] Supabase verification failed:", err);
-    return fail("UNAUTHORIZED", "Session verification failed. Please sign in again.", 401);
+    return fail(
+      "SUPABASE_UNAVAILABLE",
+      "We couldn't verify your session right now. Please try again.",
+      503
+    );
   }
 
   // 2) Find the app account for this identity, or provision a mirror the

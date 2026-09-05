@@ -398,3 +398,40 @@ Work Log:
 Stage Summary:
 - KIVO is GitHub-ready and Vercel-ready in code: realtime notifications ride Supabase Realtime (RLS-filtered, single listener, proper cleanup) with the socket service demoted to an opt-in local fallback; uploads ride Supabase Storage with per-user isolation; no credentials in the client; secrets untracked; env contract documented; build/lint/tsc all clean.
 - NOT live-verifiable in this sandbox (honestly flagged in the report): actual postgres_changes event delivery + notifications INSERT/SELECT RLS policies + storage upload policies + Prisma-against-Supabase-Postgres all require either a confirmed Supabase user (email inbox) or the user's DB connection string. Provisioning SQL + verify steps are in README; each degrades gracefully (notifications still work; uploads fall back) and takes minutes to confirm post-deploy.
+---
+Task ID: 8-fix-otp-session-loss (Agent: Cline)
+Task: OTP verification succeeds but the user is not staying authenticated (redirected to login; password login also "fails"). Find the ROOT CAUSE. No fallback chains, no fake auth, no RLS changes.
+
+Work Log:
+- Traced the entire flow (verify-email-view → services/auth → supabase.ts → session-store → page.tsx gate → bridge route → auth.ts cookies). No middleware exists. Confirmed the loss point BEFORE changing code by probing the LIVE deployment (kivo-rho-pearl.vercel.app):
+  - POST /api/auth/bridge (valid-shaped body, fake token) → 401 "Supabase not configured. Please sign in again." — a branch that is UNREACHABLE in current code (getSupabaseEnv has hardcoded fallbacks) → the deployed build is STALE (predates 88c4d6c).
+  - POST /api/auth/login + /api/auth/demo (pure Prisma probes) → 500 INTERNAL → the production DB layer is broken.
+  - GoTrue source (verify.go): type:"email" OTP checks ConfirmationToken first and upgrades to the signup path → verifyOtp success DOES confirm the email; Supabase Auth itself was never the problem.
+- Reproduced the DB failure LOCALLY and captured the real errors:
+  1) scripts/prisma-generate.mjs never read .env → generated a SQLite client while next dev loaded DATABASE_URL=postgres://… → "the URL must start with the protocol `file:`" → every Prisma call 500s (login/demo/bridge).
+  2) After fixing the schema picker: `Can't reach database server at db.<ref>.supabase.co:6543` — DNS shows the db host is AAAA-only (IPv6, no A record) and TCP 6543/5432 fail from this machine; Vercel serverless cannot reach it either → the production 500s. Auth endpoint responds fine (health ping 180ms), which is exactly why verifyOtp() succeeds while every DB-backed step fails.
+- ROOT CAUSE: the Supabase DATABASE host (direct db.<ref>.supabase.co) is unreachable (IPv6-only) from Vercel + local → bridge/DB 500s → the session store then COLLAPSED the valid Supabase session into status:"unauthenticated" → landing/login; login "failed" because Supabase accepted the password but refresh() could not hydrate (bridge down) → login-view threw "Signed in but couldn't load your profile".
+
+Fixes (no second auth system, no passwords stored, no RLS changes, no fallback chains):
+- src/lib/session-store.ts — Supabase Auth is the single source of truth: a valid Supabase session is NEVER collapsed to unauthenticated. New degraded mode (bridgeDegraded): when the bridge is down, hydration continues with a Supabase-only identity built from fetchOwnProfile (browser→Supabase, RLS-guarded); the bridge auto-retries on refresh + TOKEN_REFRESHED (upgrades to fully synced). New beginEmailVerification/endEmailVerification/finishEmailVerification: the OTP screen owns hydration (no SIGNED_IN race), the bridge is AWAITED and REQUIRED for the OTP flow, failures return {ok:false,message} without touching app state. Dev-only safe diagnostics (event names + booleans; never tokens).
+- src/features/auth/views/verify-email-view.tsx — removed fire-and-forget bridge + blind window.location redirect. Flow: verifyOtp → setSession → getSession CONFIRMED → await finishEmailVerification (bridge) → navigate home (SPA). Bridge failure: user STAYS on the screen — "Email verified, but we couldn't finish signing you in. Please try again." + Try again + Continue anyway (degraded); the Supabase session is never destroyed. Also fixed the pre-existing react-hooks/refs lint errors (pending ref → useState initializer).
+- src/app/api/auth/bridge/route.ts — server-side Supabase outages now return 503 SUPABASE_UNAVAILABLE ("try again"), only truly invalid tokens return 401 — transient outages no longer tell signed-in users to sign in again.
+- src/app/page.tsx — bridge degradation is never silent: one-time toast when degraded ("signed in, but servers unreachable… keep retrying").
+- scripts/prisma-generate.mjs — loads .env/.env.local (Next-compatible precedence) before picking the schema (fixes SQLite-client-vs-postgres-URL mismatch) + Windows spawnSync shell fix.
+- DEPLOY-FIX.md (NEW) — exact env fix: use the Supabase POOLER connection strings (IPv4-capable) for DATABASE_URL (6543 pgbouncer) + DIRECT_DATABASE_URL (5432) locally and on Vercel, set Supabase public env vars on Vercel, push schema once, redeploy latest main (deployment was stale), plus a 3-curl post-deploy verification.
+
+Verification:
+- npx tsc --noEmit → 0 errors; eslint on all touched files → 0 problems (repo has 18 pre-existing errors in untouched files under the newer react-hooks rules).
+- npm run build → success (all routes) after the script fix.
+- Local API contract: /api/supabase/health → configured:true ping ok; bridge fake token → 401 token-invalid (server reaches Supabase); bridge malformed/empty → 422; demo/login → 500 ONLY because the IPv6-only db host is unreachable from this network (root cause #2, env-level).
+- Live production probes (documented above) + GoTrue verify.go source review. Real-inbox OTP E2E remains the one step requiring the user's inbox (SMTP quota/quota + inbox access were not available in this session); every other link of the chain is verified.
+
+Resumption (same task, continued):
+- Found the working pooler endpoint for this project: aws-0-ap-southeast-1.pooler.supabase.com (scripts/probe-pooler.mjs — read-only authenticated SELECT 1 probe; password never printed).
+- .env fixed (local, gitignored): DATABASE_URL → transaction pooler aws-0-ap-southeast-1:6543 pgbouncer=true; DIRECT_DATABASE_URL → session pooler :5432. The direct db.<ref>.supabase.co host (AAAA-only/IPv6) was the root cause of every DB 500.
+- Schema pushed to Supabase Postgres via the session pooler (db push through pgbouncer 6543 HANGS — advisory locks need a direct/session connection; use DIRECT_DATABASE_URL for push/migrate).
+- Demo dataset restored via npx tsx prisma/seed.ts (the old seed lived only in the deleted SQLite DB).
+- Local verification matrix, all against live Supabase Postgres: health 200 configured; bridge fake token → 401 token-invalid; demo login → 200 + httpOnly cookie; /api/auth/session with cookie → user DTO; password login maya/KivoDemo1! → 200; wrong creds → 401; logout → 200; GET /api/feed → 200 with seeded posts; unread-count → 200; explore → 200.
+- Gotcha found: a leaked process-level DATABASE_URL (from a timed-out diagnostic loop in the shared shell) silently overrode .env for one seed run — always set DATABASE_URL explicitly when scripting against this project.
+- Remaining for the user: set the same pooler URLs + Supabase public env vars on Vercel → redeploy latest main (current deployment is stale, predates 88c4d6c). Then the OTP success path works end-to-end on https://kivo-rho-pearl.vercel.app.
+

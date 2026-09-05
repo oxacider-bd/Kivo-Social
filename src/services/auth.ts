@@ -116,6 +116,19 @@ export async function verifyEmailOtp(
     type: "email",
   });
   if (error) throw mapSupabaseError(error);
+
+  if (process.env.NODE_ENV !== "production") {
+    // Safe diagnostics — ids/booleans only. NEVER log tokens, passwords or OTPs.
+    const { data: persisted } = await supabase.auth.getSession();
+    console.info("[kivo-auth:dev] verifyOtp result", {
+      email,
+      userId: data.user?.id,
+      hasUser: Boolean(data.user),
+      hasSession: Boolean(data.session),
+      sessionPersisted: Boolean(persisted.session),
+    });
+  }
+
   return { session: data?.session ?? null, user: data?.user ?? null };
 }
 
