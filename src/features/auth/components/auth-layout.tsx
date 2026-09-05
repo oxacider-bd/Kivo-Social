@@ -54,17 +54,20 @@ export function AuthLayout({
         </aside>
 
         {/* Form panel */}
-        <main className="flex flex-1 flex-col">
-          <div className="flex items-center justify-between p-5 lg:justify-end">
+        <main className="flex min-w-0 flex-1 flex-col">
+          <div className="flex items-center justify-between px-5 pb-4 pt-[max(1.25rem,env(safe-area-inset-top))] lg:justify-end lg:pt-5">
             <Link href="#/" className="lg:hidden" aria-label="KIVO home">
               <KivoBrand variant="compact" />
             </Link>
             <ThemeToggle />
           </div>
-          <div className="flex flex-1 flex-col justify-center px-6 pb-16 sm:px-10">
-            <div className="mx-auto w-full max-w-[400px]">{children}</div>
+          {/* my-auto centers the form when there is room and collapses to
+              top-aligned when the form is taller than the viewport — the
+              heading can never clip under the top bar on small screens. */}
+          <div className="flex min-h-0 flex-1 flex-col px-5 pb-10 pt-5 sm:px-10">
+            <div className="mx-auto my-auto w-full max-w-[400px] min-w-0">{children}</div>
           </div>
-          <footer className="mt-auto px-6 pb-6 text-center text-xs text-muted-foreground sm:px-10">
+          <footer className="mt-auto px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-center text-xs text-muted-foreground sm:px-10">
             <span>KIVO — Social, but cleaner.</span>
           </footer>
         </main>

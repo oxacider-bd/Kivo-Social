@@ -197,27 +197,41 @@ export function CinematicSplash({
   /** Fires when the exit animation has fully played — parent unmounts us. */
   onFinish: () => void;
 }) {
-  const reduce = useReducedMotion() ?? false;
+  const prefersReducedMotion = useReducedMotion() ?? false;
+  // Compact splash: the full cinematic plays once per browser session; repeat
+  // loads get a fast brand flash instead of the 2s choreography.
+  const [compact] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      window.sessionStorage.getItem('kivo:splash-seen') === '1',
+  );
+  const still = compact || prefersReducedMotion;
   const [introDone, setIntroDone] = useState(false);
 
   // 1) The intro always plays out — even when the session resolves instantly.
   //    (Timer-callback setState, never synchronous in the effect body.)
   useEffect(() => {
-    const t = setTimeout(() => setIntroDone(true), reduce ? 400 : INTRO_MS);
+    const t = setTimeout(() => setIntroDone(true), still ? 400 : INTRO_MS);
     return () => clearTimeout(t);
-  }, [reduce]);
+  }, [still]);
 
   // 2) The curtain lifts only when BOTH the intro finished AND the session
   //    resolved — derived, so no imperative phase transitions are needed.
   const exiting = introDone && resolved;
 
-  // 3) Exit choreography → hand off to the parent.
+  // 3) Exit choreography → hand off to the parent. The full cinematic plays
+  //    once per session — afterwards the compact flash takes over.
   useEffect(() => {
     if (!exiting) return;
+    try {
+      window.sessionStorage.setItem("kivo:splash-seen", "1");
+    } catch {
+      /* ignore */
+    }
     onExitStart?.();
-    const t = setTimeout(() => onFinish(), reduce ? 320 : EXIT_MS + 90);
+    const t = setTimeout(() => onFinish(), still ? 320 : EXIT_MS + 90);
     return () => clearTimeout(t);
-  }, [exiting, reduce, onExitStart, onFinish]);
+  }, [exiting, still, onExitStart, onFinish]);
 
   return (
     <motion.div
@@ -233,12 +247,12 @@ export function CinematicSplash({
       }}
       transition={
         exiting
-          ? { duration: reduce ? 0.3 : EXIT_MS / 1000, delay: 0.05, ease: EASE_IN_OUT }
+          ? { duration: still ? 0.3 : EXIT_MS / 1000, delay: 0.05, ease: EASE_IN_OUT }
           : { duration: 0.4, ease: "easeOut" }
       }
     >
       {/* Ember field (motion-safe only) */}
-      {!reduce && <EmberField />}
+      {!still && <EmberField />}
 
       {/* Warm pool of light beneath the lockup — a stage floor for the mark */}
       <motion.div
@@ -256,8 +270,8 @@ export function CinematicSplash({
       {/* Center stage */}
       <motion.div
         className="absolute inset-0 flex flex-col items-center justify-center px-6"
-        animate={exiting && !reduce ? { scale: 1.06, y: -8 } : { scale: 1, y: 0 }}
-        transition={{ duration: reduce ? 0.3 : EXIT_MS / 1000, ease: EASE_IN_OUT }}
+        animate={exiting && !still ? { scale: 1.06, y: -8 } : { scale: 1, y: 0 }}
+        transition={{ duration: still ? 0.3 : EXIT_MS / 1000, ease: EASE_IN_OUT }}
       >
         <div className="relative">
           {/* Halo bloom behind the mark (reuses the brand glow utility) */}
@@ -270,7 +284,7 @@ export function CinematicSplash({
           />
 
           {/* Shockwave rings at ignition */}
-          {!reduce &&
+          {!still &&
             [0, 1].map((i) => (
               <motion.div
                 key={i}
@@ -291,7 +305,7 @@ export function CinematicSplash({
             ))}
 
           {/* Ignition spark — burns out exactly as the mark materializes */}
-          {!reduce && (
+          {!still && (
             <motion.div
               aria-hidden="true"
               className="absolute top-1/2 left-1/2 h-2 w-2 rounded-full"
@@ -309,10 +323,10 @@ export function CinematicSplash({
           {/* The mark — the one and only official brand asset */}
           <motion.div
             className="relative"
-            initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.55, y: 14, filter: "blur(16px)" }}
-            animate={reduce ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0, filter: "blur(0px)" }}
+            initial={still ? { opacity: 0 } : { opacity: 0, scale: 0.55, y: 14, filter: "blur(16px)" }}
+            animate={still ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0, filter: "blur(0px)" }}
             transition={
-              reduce
+              still
                 ? { duration: 0.35 }
                 : { type: "spring", stiffness: 130, damping: 17, mass: 0.9, delay: 0.5 }
             }
@@ -328,7 +342,7 @@ export function CinematicSplash({
                 className="h-full w-full rounded-[22%] shadow-2xl shadow-black/50"
               />
               {/* Specular shine sweep, clipped to the mark's silhouette */}
-              {!reduce && (
+              {!still && (
                 <div
                   aria-hidden="true"
                   className="absolute inset-0 overflow-hidden rounded-[22%]"
@@ -353,9 +367,9 @@ export function CinematicSplash({
         <motion.div
           aria-hidden="true"
           className="mt-7 flex items-baseline"
-          initial={reduce ? undefined : { letterSpacing: "0.34em" }}
+          initial={still ? undefined : { letterSpacing: "0.34em" }}
           animate={{ letterSpacing: "0.02em" }}
-          transition={reduce ? { duration: 0 } : { duration: 1.15, delay: 1.0, ease: EASE_OUT }}
+          transition={still ? { duration: 0 } : { duration: 1.15, delay: 1.0, ease: EASE_OUT }}
         >
           <span className="sr-only">KIVO</span>
           {"KIVO".split("").map((ch, i) => (
@@ -363,10 +377,10 @@ export function CinematicSplash({
               key={i}
               className="text-[2.35rem] font-extrabold leading-none text-stone-100 sm:text-[2.75rem]"
               style={{ textShadow: "0 0 28px rgba(255,150,70,0.22)" }}
-              initial={reduce ? { opacity: 0 } : { opacity: 0, y: 18, filter: "blur(8px)" }}
-              animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0, filter: "blur(0px)" }}
+              initial={still ? { opacity: 0 } : { opacity: 0, y: 18, filter: "blur(8px)" }}
+              animate={still ? { opacity: 1 } : { opacity: 1, y: 0, filter: "blur(0px)" }}
               transition={
-                reduce
+                still
                   ? { duration: 0.3, delay: 0.1 + i * 0.05 }
                   : { duration: 0.55, delay: 1.02 + i * 0.07, ease: EASE_OUT }
               }
@@ -380,9 +394,9 @@ export function CinematicSplash({
         <motion.p
           aria-hidden="true"
           className="mt-3 text-sm font-medium text-stone-400"
-          initial={reduce ? { opacity: 0 } : { opacity: 0, y: 10, filter: "blur(6px)" }}
-          animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0, filter: "blur(0px)" }}
-          transition={reduce ? { duration: 0.3, delay: 0.2 } : { duration: 0.55, delay: 1.42, ease: EASE_OUT }}
+          initial={still ? { opacity: 0 } : { opacity: 0, y: 10, filter: "blur(6px)" }}
+          animate={still ? { opacity: 1 } : { opacity: 1, y: 0, filter: "blur(0px)" }}
+          transition={still ? { duration: 0.3, delay: 0.2 } : { duration: 0.55, delay: 1.42, ease: EASE_OUT }}
         >
           Social, but cleaner.
         </motion.p>
@@ -393,7 +407,7 @@ export function CinematicSplash({
           className="splash-bar mt-10 h-[3px] w-36 overflow-hidden rounded-full bg-white/10"
           initial={{ opacity: 0 }}
           animate={{ opacity: exiting ? 0 : 1 }}
-          transition={{ duration: 0.5, delay: exiting ? 0 : reduce ? 0.25 : 1.55 }}
+          transition={{ duration: 0.5, delay: exiting ? 0 : still ? 0.25 : 1.55 }}
         />
       </motion.div>
 

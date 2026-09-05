@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useSession } from "@/lib/session-store";
 import { navigateTo } from "@/lib/router";
@@ -20,6 +20,14 @@ export default function LoginView() {
   const [demoLoading, setDemoLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needsVerification, setNeedsVerification] = useState(false);
+
+  // Unconfirmed account: go straight to the dedicated OTP screen instead of
+  // leaving the user on the login form with only a warning message.
+  useEffect(() => {
+    if (!needsVerification) return;
+    setPendingVerification(email.trim());
+    navigateTo("/verify-email", { replace: true });
+  }, [needsVerification, email]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();

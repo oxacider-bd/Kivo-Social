@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useSession } from "@/lib/session-store";
 import { navigateTo } from "@/lib/router";
-import { signUp } from "@/services/auth";
+import { signUp, supabaseSignOut } from "@/services/auth";
 import { setPendingVerification, SIGNUP_PREFILL_EMAIL_KEY } from "@/lib/pending-verification";
 import { AuthLayout } from "@/features/auth/components/auth-layout";
 import { Button } from "@/components/ui/button";
@@ -65,12 +65,9 @@ export default function SignupView() {
       if (result.status === "confirmation-required") {
         // Hand off to the dedicated OTP verification screen. Only the email
         // (never the password or code) is stored, so a refresh stays recoverable.
-        // Store password temporarily for auto-login after OTP verification
-        try {
-          window.sessionStorage.setItem("signup_password", password);
-        } catch {
-          /* ignore */
-        }
+        // A stale authenticated session (previously signed-in user) must not
+        // bounce the OTP route — sign out so the new signup owns the screen.
+        await supabaseSignOut();
         setPendingVerification(email.trim());
         navigateTo("/verify-email", { replace: true });
         return;
