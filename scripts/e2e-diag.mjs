@@ -45,7 +45,7 @@ console.log("MAILBOX_OK:", mailboxAddr.replace(/(.{3}).*(@.*)/, "$1***$2"));
 // â”€â”€ 2. Supabase signup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const appPass = "Xk" + crypto.randomUUID().replace(/-/g, "") + "!9Z";
 let signup = null;
-for (let attempt = 1; attempt <= 3; attempt++) {
+for (let attempt = 1; attempt <= 15; attempt++) {
   signup = await jfetch(`${SB}/auth/v1/signup`, {
     method: "POST",
     headers: { apikey: KEY, "content-type": "application/json" },
@@ -55,9 +55,9 @@ for (let attempt = 1; attempt <= 3; attempt++) {
       data: { full_name: "KIVO Diagnostics", username: "kivodiag" },
     }),
   });
-  if (signup.res.status !== 429) break;
+  if (signup.res.status !== 429 && !(signup.res.status === 500 && /confirmation email/i.test(signup.body?.msg ?? ""))) break;
   console.log(`signup 429 (attempt ${attempt}) â€” waiting 30sâ€¦`);
-  await sleep(30_000);
+  await sleep(240_000);
 }
 console.log("SIGNUP_STATUS:", signup.res.status, "error_code:", signup.body?.error_code ?? "-", "msg:", signup.body?.msg ?? signup.body?.error_description ?? signup.body?.error ?? "-");
 if (!signup.res.ok) process.exit(1);

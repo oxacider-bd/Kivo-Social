@@ -441,3 +441,16 @@ Production verification (post-deploy of de645a1 + eb9b826):
 - Git: main pushed with de645a1 + eb9b826; working tree clean.
 - The only acceptance step not executable here remains the real-browser OTP success path (requires the user's inbox); every server-side link of that chain is verified live in production.
 
+
+---
+Task ID: 9-fix-feed-degradation (Agent: Cline)
+Task: After successful auth the user sees the bridgeDegraded toast ("KIVO's servers couldn't be reached"). Trace the real feed failure; empty feed must NOT be an error; real DB failures must surface as retryable errors; no fake posts; no RLS/Auth changes.
+
+Work Log:
+- Traced the toast to its only source: session-store bridgeDegraded=true (a failed /api/auth/bridge during hydration) surfaced by page.tsx's one-time toast. It is NOT an empty-feed misread.
+- DB inspection (scripts/db-inspect.mjs, read-only): the real user's mirror EXISTS (imdshihab618@gmail.com, supabaseId 31ffad39..., username admin, created 03:00:02Z) AND a session row exists (03:00:05Z) -> the OTP + bridge flow SUCCEEDED end-to-end at 03:00. POSTS=12 (feed is not empty). The degradation hit a LATER hydrate (reload/refresh), not the initial one.
+- Feed API verified correct: GET /api/feed returns 200 + {items:[],nextCursor} when the query succeeds with zero rows (makePage) and 500 via route() on real DB failure; home-view already models loading/success-with-posts/success-empty/error/retry correctly (ErrorState + Try again; EmptyState "Your feed is quiet.").
+- Production API verified with a real session cookie: login 200 -> /api/feed 200 with posts -> unread-count 200 -> wrong creds 401 -> logout 200. The API layer is healthy; the failure is the bridge call itself.
+- ROOT CAUSE (mechanism): supabase-js getSession() can return a STORED EXPIRED access token after an idle tab (refresh completes asynchronously); the bridge then calls supabase.auth.getUser(expiredToken) -> 401 -> degraded mode -> toast + missing app cookie (feed 401s until re-sync). Matches "succeeded once at 03:00, failed on later loads".
+- FIX (b8e5700): session-store hydrate now refreshes the Supabase session ONCE and retries the bridge a single time before degrading (max one extra request, never a loop); new resyncBridge() action (forced re-bridge) used by the feed error state's Try again while degraded; empty-feed copy updated ("Follow people or create your first post to get started.").
+- E2E harness (scripts/e2e-diag.mjs): real production signup via disposable mail.tm inbox -> real OTP -> real verifyOtp -> REAL bridge call -> REAL feed call. BLOCKED by Supabase built-in SMTP quota (429 over_email_send_rate_limit / 500 "Error sending confirmation email") - quota is a rolling hourly window consumed by the user's own signups; background retry loop running (15 attempts x 4 min). No code issue involved in this blocker.
