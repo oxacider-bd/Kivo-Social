@@ -469,3 +469,19 @@ Work Log:
 - notifications-client: mark-read / mark-all now best-effort mirror is_read=true into Supabase via ref_id (app API stays authoritative; legacy accounts without a Supabase identity are skipped).
 - README: canonical notifications table + RLS policies + publication SQL (idempotent) for fresh setups.
 - Two-user production E2E harness written (scripts/e2e-diag.mjs: disposable mail.tm inboxes -> real signups -> OTP -> bridge both -> B subscribes -> A follows B -> assert realtime event + REST row + unread + list + read-state sync). BLOCKED by the Supabase built-in SMTP quota (429 over_email_send_rate_limit) which the user's own signup testing keeps saturating; background retry loop running (40 attempts x 60s).
+
+---
+Task ID: 11-production-data-layer-debug (Agent: Cline)
+Task: Production feed failure ("Your feed couldn't load") + posts not persisting. Find the exact root cause; no workarounds, no fake data, no auth/RLS changes.
+
+Work Log:
+- Production probes: /api/auth/login 500 (worked at 02:55), demo 500, wrong-creds probe 500 (pure findUnique) -> ENTIRE data layer down; /api/supabase/health 200 (Supabase env fine). Failure timing 0.66-0.96s = initialization/validation error, NOT a connection timeout. The database itself was healthy (pooler SELECT ok; kivo.Post count 13).
+- Added safe diagnostics: /api/db/health (runtime datasource description + live connection result, credentials stripped) and Prisma-error surfacing in errorResponse (P-code/name + scrubbed detail). Deployed and captured the EXACT error: P2010 -> 42P05 prepared statement "s0" already exists.
+- ROOT CAUSE: the Vercel DATABASE_URL pointed at the Supabase transaction pooler (:6543) WITHOUT pgbouncer=true, so Prisma used named prepared statements; through PgBouncer transaction mode they collide across server connections (42P05) under load. Per-request PrismaClient creation (prod skipped the global cache) amplified it - every request opened its own pool connection and frozen instances leaked them until refusals. Intermittent at low traffic (02:51 one 500, then green), constant under load (07:38+). SAME root cause for feed read and post write (shared data layer), as the task anticipated.
+- FIXES: (1) db.ts resolves the URL programmatically - pgbouncer=true + connection_limit=1 enforced for Supabase transaction-pooler hosts (self-heals the env gap; SQLite/direct URLs untouched); (2) PrismaClient cached in production too (one client per instance - bounds pooler connections); (3) safe diagnostics kept (/api/db/health + diag in DB-failure envelopes).
+
+Production E2E (real deployment, post-fix):
+- /api/db/health: postgres, pooler host, pgbouncer=true, connection ok.
+- login 200 -> feed 200 -> POST /api/posts 200 (post one, id cmto44ntk...) -> SQL: row EXISTS in kivo.Post (total 14) -> feed contains it -> post two 200 -> BOTH in feed -> reaction 200 + comment 200 on rafid's post -> rows PERSISTED (SQL) -> re-login -> feed still contains both (refresh persistence) -> wrong creds 401 -> db health ok under load.
+- Supabase fan-out rows empty for maya/rafid probes: EXPECTED (legacy mirror accounts have no Supabase identity/recipient - fan-out is Supabase-identity users only; policy-level insert verification done via SQL impersonation in task 10).
+- Diagnostic posts left in production content ("E2E production write test - post one/two") as transparent test artifacts.

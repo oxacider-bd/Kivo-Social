@@ -1,0 +1,12 @@
+﻿import { PrismaClient } from "@prisma/client";
+const db = new PrismaClient();
+const rafidPostId = process.argv[2];
+const reaction = await db.reaction.findFirst({ where: { postId: rafidPostId, type: "LOVE" }, orderBy: { createdAt: "desc" } });
+console.log("REACTION_ROW:", reaction ? "PERSISTED (" + reaction.type + ")" : "MISSING");
+const comment = await db.comment.findFirst({ where: { postId: rafidPostId }, orderBy: { createdAt: "desc" } });
+console.log("COMMENT_ROW:", comment ? "PERSISTED (" + comment.content.slice(0, 40) + ")" : "MISSING");
+const notifs = await db.notification.findMany({ where: { postId: rafidPostId }, orderBy: { createdAt: "desc" }, take: 3 });
+console.log("APP_NOTIFICATION_ROWS:", JSON.stringify(notifs.map((n) => ({ type: n.type, readAt: n.readAt }))));
+const supabaseRows = await db.$queryRawUnsafe(`select type, ref_id, message, is_read from public.notifications order by created_at desc limit 3`);
+console.log("SUPABASE_FANOUT_ROWS:", JSON.stringify(supabaseRows));
+await db.$disconnect();
