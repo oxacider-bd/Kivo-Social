@@ -485,3 +485,18 @@ Production E2E (real deployment, post-fix):
 - login 200 -> feed 200 -> POST /api/posts 200 (post one, id cmto44ntk...) -> SQL: row EXISTS in kivo.Post (total 14) -> feed contains it -> post two 200 -> BOTH in feed -> reaction 200 + comment 200 on rafid's post -> rows PERSISTED (SQL) -> re-login -> feed still contains both (refresh persistence) -> wrong creds 401 -> db health ok under load.
 - Supabase fan-out rows empty for maya/rafid probes: EXPECTED (legacy mirror accounts have no Supabase identity/recipient - fan-out is Supabase-identity users only; policy-level insert verification done via SQL impersonation in task 10).
 - Diagnostic posts left in production content ("E2E production write test - post one/two") as transparent test artifacts.
+
+---
+Task ID: 12-onesignal-web-push (Agent: Cline)
+Task: Complete OneSignal Web Push integration (v16) as an OPTIONAL delivery layer on top of the existing Supabase notifications architecture. No taxonomy changes, no Realtime replacement, no client-side REST secrets.
+
+Work Log:
+- Service worker: the official downloaded OneSignalSDKWorker.js (v16 importScripts one-liner, 75 bytes, unmodified) moved to public/OneSignalSDKWorker.js (exactly once); the download folder with __MACOSX junk removed. Verified live: HTTP 200, application/javascript at the root scope.
+- src/lib/onesignal.ts (NEW): centralized client integration - SDK loaded ONCE from the official v16 CDN via OneSignalDeferred queue, init exactly once (idempotent, failure-isolated), identity via OneSignal.login(externalId = Supabase user UUID) / logout() (serialized, never left attached across accounts), permission NEVER forced on load - opt-in from Settings (dashboard-configured prompt; browser never re-prompts after denial). App id from NEXT_PUBLIC_ONESIGNAL_APP_ID with the documented public fallback; server REST key is server-only.
+- notify.ts: after the durable row + Supabase fan-out, a server-side OneSignal push targeted ONLY at the recipient (include_aliases.external_id = recipient Supabase UUID, target_channel push), headings from the actor + existing type copy, contents from the existing message, deep link built from the request origin (openPost / profile / notifications fallback), idempotency-key = the app notification id, 4s timeout, failure-isolated (never affects the social action).
+- request-context: captures the request origin for dynamic deep links. api-helpers: route wrapper forwards it.
+- page.tsx: init once + identity mapping on auth state (login/logout/restore) + /?openPost= deep link dispatches the existing kivo:open-thread flow (thread modal) after the authenticated shell mounts.
+- settings-view: Browser push opt-in card (granted/denied/default states, never shown when OneSignal is unconfigured).
+- .env.example: NEXT_PUBLIC_ONESIGNAL_APP_ID= / ONESIGNAL_REST_API_KEY= (names only). Local .env: App ID set; REST key intentionally empty (user sets it on Vercel).
+- Security audit: deployed client bundle scanned - App ID present (public by design), NO REST key name or value in any chunk; RLS untouched; no tokens/OTPs/passwords logged anywhere.
+- Remaining (user-side): set ONESIGNAL_REST_API_KEY on Vercel (server-only secret); the browser subscription + real push delivery steps need a human browser session (permission grant) - harness and code are ready and the service worker + SDK + identity plumbing are verified live.
